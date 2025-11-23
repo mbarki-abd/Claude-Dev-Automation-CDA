@@ -35,7 +35,19 @@ test.describe('API Health', () => {
   });
 });
 
-test.describe('API Tasks', () => {
+// These tests require a running PostgreSQL database
+// Skip them when database is not available
+test.describe('API Tasks (requires database)', () => {
+  test.beforeEach(async ({ request }) => {
+    // Check if database is available
+    const healthResponse = await request.get(`${API_URL}/api/health/ready`);
+    const health = await healthResponse.json();
+
+    if (health.checks?.database !== 'connected') {
+      test.skip(true, 'Database not available');
+    }
+  });
+
   test('should list tasks', async ({ request }) => {
     const response = await request.get(`${API_URL}/api/tasks`);
 
@@ -129,7 +141,16 @@ test.describe('API Tasks', () => {
   });
 });
 
-test.describe('API Executions', () => {
+test.describe('API Executions (requires database)', () => {
+  test.beforeEach(async ({ request }) => {
+    const healthResponse = await request.get(`${API_URL}/api/health/ready`);
+    const health = await healthResponse.json();
+
+    if (health.checks?.database !== 'connected') {
+      test.skip(true, 'Database not available');
+    }
+  });
+
   test('should list executions', async ({ request }) => {
     const response = await request.get(`${API_URL}/api/executions`);
 
@@ -141,7 +162,16 @@ test.describe('API Executions', () => {
   });
 });
 
-test.describe('API Proposals', () => {
+test.describe('API Proposals (requires database)', () => {
+  test.beforeEach(async ({ request }) => {
+    const healthResponse = await request.get(`${API_URL}/api/health/ready`);
+    const health = await healthResponse.json();
+
+    if (health.checks?.database !== 'connected') {
+      test.skip(true, 'Database not available');
+    }
+  });
+
   test('should list proposals', async ({ request }) => {
     const response = await request.get(`${API_URL}/api/proposals`);
 

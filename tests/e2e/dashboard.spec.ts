@@ -4,21 +4,21 @@ test.describe('Dashboard', () => {
   test('should display the main dashboard', async ({ page }) => {
     await page.goto('/');
 
-    // Check that the sidebar is visible
-    await expect(page.getByRole('link', { name: /dashboard/i })).toBeVisible();
-    await expect(page.getByRole('link', { name: /tasks/i })).toBeVisible();
-    await expect(page.getByRole('link', { name: /terminal/i })).toBeVisible();
-    await expect(page.getByRole('link', { name: /proposals/i })).toBeVisible();
-    await expect(page.getByRole('link', { name: /settings/i })).toBeVisible();
+    // Check that the sidebar navigation links are visible (use exact names from sidebar)
+    await expect(page.locator('nav').getByRole('link', { name: 'Dashboard', exact: true })).toBeVisible();
+    await expect(page.locator('nav').getByRole('link', { name: 'Tasks', exact: true })).toBeVisible();
+    await expect(page.locator('nav').getByRole('link', { name: 'Terminal', exact: true })).toBeVisible();
+    await expect(page.locator('nav').getByRole('link', { name: 'Proposals', exact: true })).toBeVisible();
+    await expect(page.locator('nav').getByRole('link', { name: 'Settings', exact: true })).toBeVisible();
 
     // Check the dashboard title
-    await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /dashboard/i }).first()).toBeVisible();
   });
 
   test('should navigate to tasks page', async ({ page }) => {
     await page.goto('/');
 
-    await page.getByRole('link', { name: /tasks/i }).click();
+    await page.locator('nav').getByRole('link', { name: 'Tasks', exact: true }).click();
 
     await expect(page).toHaveURL('/tasks');
     await expect(page.getByRole('heading', { name: /tasks/i })).toBeVisible();
@@ -28,7 +28,7 @@ test.describe('Dashboard', () => {
   test('should navigate to terminal page', async ({ page }) => {
     await page.goto('/');
 
-    await page.getByRole('link', { name: /terminal/i }).click();
+    await page.locator('nav').getByRole('link', { name: 'Terminal', exact: true }).click();
 
     await expect(page).toHaveURL('/terminal');
     await expect(page.getByRole('heading', { name: /terminal/i })).toBeVisible();
@@ -37,7 +37,7 @@ test.describe('Dashboard', () => {
   test('should navigate to proposals page', async ({ page }) => {
     await page.goto('/');
 
-    await page.getByRole('link', { name: /proposals/i }).click();
+    await page.locator('nav').getByRole('link', { name: 'Proposals', exact: true }).click();
 
     await expect(page).toHaveURL('/proposals');
     await expect(page.getByRole('heading', { name: /proposals/i })).toBeVisible();
@@ -46,7 +46,7 @@ test.describe('Dashboard', () => {
   test('should navigate to settings page', async ({ page }) => {
     await page.goto('/');
 
-    await page.getByRole('link', { name: /settings/i }).click();
+    await page.locator('nav').getByRole('link', { name: 'Settings', exact: true }).click();
 
     await expect(page).toHaveURL('/settings');
     await expect(page.getByRole('heading', { name: /settings/i })).toBeVisible();
