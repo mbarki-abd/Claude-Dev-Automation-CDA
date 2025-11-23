@@ -1,15 +1,16 @@
 # Unified Dockerfile - All components in a single container
 # Includes: PostgreSQL, Redis, API, Dashboard (nginx)
 
-FROM node:20-alpine AS base
-
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy workspace configuration
+# Install pnpm via corepack
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Copy workspace configuration files
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY .npmrc* ./
 COPY tsconfig.base.json ./
 
 # Copy package.json files for all packages
@@ -17,22 +18,29 @@ COPY packages/shared/package.json ./packages/shared/
 COPY apps/api/package.json ./apps/api/
 COPY apps/dashboard/package.json ./apps/dashboard/
 
-# Install dependencies
-FROM base AS deps
-RUN pnpm install --frozen-lockfile
+# Configure pnpm for hoisted node_modules (makes binaries accessible)
+RUN echo "shamefully-hoist=true" >> .npmrc && \
+    echo "node-linker=hoisted" >> .npmrc
 
-# Build stage
-FROM deps AS builder
+# Install all dependencies
+RUN pnpm install --frozen-lockfile || pnpm install
+
+# Install typescript globally as fallback
+RUN npm install -g typescript
 
 # Copy source files
 COPY packages/shared ./packages/shared
 COPY apps/api ./apps/api
 COPY apps/dashboard ./apps/dashboard
 
-# Build all packages
-RUN pnpm --filter @cda/shared build
-RUN pnpm --filter @cda/api build
-RUN pnpm --filter @cda/dashboard build
+# Build shared package first
+RUN cd packages/shared && pnpm run build || tsc
+
+# Build API
+RUN cd apps/api && pnpm run build || tsc
+
+# Build Dashboard (React/Vite)
+RUN cd apps/dashboard && pnpm run build
 
 # Production stage - unified container with all services
 FROM alpine:3.19 AS runner
@@ -48,9 +56,6 @@ RUN apk add --no-cache \
     supervisor \
     bash \
     curl
-
-# Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
 
 # Create directories
 RUN mkdir -p /app /run/postgresql /run/nginx /var/log/supervisor /data/postgres /data/redis
@@ -71,19 +76,13 @@ RUN chown -R redis:redis /data/redis
 # Copy application files
 WORKDIR /app
 
-# Copy built files from builder
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/pnpm-workspace.yaml ./
-COPY --from=builder /app/packages/shared/package.json ./packages/shared/
-COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
-COPY --from=builder /app/apps/api/package.json ./apps/api/
-COPY --from=builder /app/apps/api/dist ./apps/api/dist
+# Copy built files from builder (including node_modules)
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/shared ./packages/shared
+COPY --from=builder /app/apps/api ./apps/api
 
 # Copy dashboard static files
 COPY --from=builder /app/apps/dashboard/dist /usr/share/nginx/html
-
-# Install production dependencies
-RUN pnpm install --prod --ignore-scripts 2>/dev/null || npm install --omit=dev
 
 # Copy nginx configuration
 COPY docker/nginx.unified.conf /etc/nginx/http.d/default.conf

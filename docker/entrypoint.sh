@@ -4,12 +4,16 @@ set -e
 echo "=== Claude Dev Automation - Starting All Services ==="
 
 # Ensure directories exist with correct permissions
-mkdir -p /run/postgresql /run/nginx /var/log/supervisor /data/postgres /data/redis
+mkdir -p /run/postgresql /run/nginx /var/log/supervisor /data/postgres /data/redis /tmp/postgres
+
+# Fix ownership
+chown -R postgres:postgres /data/postgres /run/postgresql /tmp/postgres /var/log/supervisor
+chmod 777 /var/log/supervisor
+chown -R redis:redis /data/redis
 
 # Initialize PostgreSQL if needed
 if [ ! -f /data/postgres/PG_VERSION ]; then
     echo "Initializing PostgreSQL database..."
-    chown -R postgres:postgres /data/postgres
     su postgres -c "initdb -D /data/postgres"
 
     # Configure PostgreSQL
@@ -18,12 +22,9 @@ if [ ! -f /data/postgres/PG_VERSION ]; then
     echo "listen_addresses = 'localhost'" >> /data/postgres/postgresql.conf
 fi
 
-chown -R postgres:postgres /data/postgres /run/postgresql
-chown -R redis:redis /data/redis
-
 # Start PostgreSQL temporarily to initialize database
 echo "Starting PostgreSQL for initialization..."
-su postgres -c "pg_ctl -D /data/postgres -l /var/log/supervisor/postgresql-init.log start" || true
+su postgres -c "pg_ctl -D /data/postgres -l /tmp/postgres/postgresql-init.log start" || true
 
 # Wait for PostgreSQL
 for i in {1..30}; do

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-const API_URL = 'http://localhost:3000';
+// Use environment variable or default to localhost:8080 for Docker testing
+const API_URL = process.env.API_URL || 'http://localhost:8080';
 
 test.describe('API Health', () => {
   test('should return health status', async ({ request }) => {
@@ -43,7 +44,9 @@ test.describe('API Tasks (requires database)', () => {
     const healthResponse = await request.get(`${API_URL}/api/health/ready`);
     const health = await healthResponse.json();
 
-    if (health.checks?.database !== 'connected') {
+    // Check if database is available (status can be 'up' or 'connected')
+    const dbStatus = health.checks?.database?.status || health.checks?.database;
+    if (dbStatus !== 'up' && dbStatus !== 'connected') {
       test.skip(true, 'Database not available');
     }
   });
@@ -146,7 +149,9 @@ test.describe('API Executions (requires database)', () => {
     const healthResponse = await request.get(`${API_URL}/api/health/ready`);
     const health = await healthResponse.json();
 
-    if (health.checks?.database !== 'connected') {
+    // Check if database is available (status can be 'up' or 'connected')
+    const dbStatus = health.checks?.database?.status || health.checks?.database;
+    if (dbStatus !== 'up' && dbStatus !== 'connected') {
       test.skip(true, 'Database not available');
     }
   });
@@ -167,7 +172,9 @@ test.describe('API Proposals (requires database)', () => {
     const healthResponse = await request.get(`${API_URL}/api/health/ready`);
     const health = await healthResponse.json();
 
-    if (health.checks?.database !== 'connected') {
+    // Check if database is available (status can be 'up' or 'connected')
+    const dbStatus = health.checks?.database?.status || health.checks?.database;
+    if (dbStatus !== 'up' && dbStatus !== 'connected') {
       test.skip(true, 'Database not available');
     }
   });

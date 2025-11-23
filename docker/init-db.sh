@@ -29,58 +29,89 @@ EOSQL
 # Connect to cda database and create tables
 psql -U cda -h localhost -d cda <<-EOSQL
     -- Enable UUID extension
-    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-    -- Tasks table
+    -- Tasks table (matches migration schema)
     CREATE TABLE IF NOT EXISTS tasks (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        external_id VARCHAR(255),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        planner_id VARCHAR(255) UNIQUE,
         title VARCHAR(500) NOT NULL,
         description TEXT,
-        type VARCHAR(50) NOT NULL DEFAULT 'development',
-        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        type VARCHAR(50) DEFAULT 'development',
+        status VARCHAR(50) DEFAULT 'pending',
         priority INTEGER DEFAULT 5,
-        source VARCHAR(50) DEFAULT 'manual',
-        metadata JSONB DEFAULT '{}',
+        complexity VARCHAR(20),
+        estimated_duration VARCHAR(50),
+        interpretation JSONB,
+        execution_plan JSONB,
+        required_tools TEXT[],
+        mcp_servers TEXT[],
+        prerequisites JSONB,
+        planner_bucket VARCHAR(255),
+        planner_labels TEXT[],
+        assigned_to VARCHAR(255),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        started_at TIMESTAMP WITH TIME ZONE,
+        completed_at TIMESTAMP WITH TIME ZONE
     );
 
-    -- Executions table
+    -- Executions table (matches migration schema)
     CREATE TABLE IF NOT EXISTS executions (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
-        status VARCHAR(50) NOT NULL DEFAULT 'pending',
-        started_at TIMESTAMP WITH TIME ZONE,
-        completed_at TIMESTAMP WITH TIME ZONE,
+        status VARCHAR(50) DEFAULT 'running',
+        container_id VARCHAR(255),
         output TEXT,
         error TEXT,
-        metadata JSONB DEFAULT '{}',
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        exit_code INTEGER,
+        duration_ms INTEGER,
+        artifacts JSONB,
+        started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        completed_at TIMESTAMP WITH TIME ZONE
     );
 
-    -- Proposals table
+    -- Proposals table (matches migration schema)
     CREATE TABLE IF NOT EXISTS proposals (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        execution_id UUID REFERENCES executions(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+        execution_id UUID REFERENCES executions(id) ON DELETE SET NULL,
         type VARCHAR(50) NOT NULL,
         title VARCHAR(500) NOT NULL,
         description TEXT,
-        changes JSONB DEFAULT '[]',
-        status VARCHAR(50) NOT NULL DEFAULT 'pending',
-        reviewed_at TIMESTAMP WITH TIME ZONE,
-        reviewed_by VARCHAR(255),
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        options JSONB NOT NULL,
+        recommendation VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'pending',
+        resolution VARCHAR(100),
+        resolved_by VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        resolved_at TIMESTAMP WITH TIME ZONE
+    );
+
+    -- Execution logs table
+    CREATE TABLE IF NOT EXISTS execution_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        execution_id UUID REFERENCES executions(id) ON DELETE CASCADE,
+        timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        stream VARCHAR(10) DEFAULT 'stdout',
+        data TEXT NOT NULL
+    );
+
+    -- Settings table
+    CREATE TABLE IF NOT EXISTS settings (
+        key VARCHAR(255) PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
 
     -- Create indexes
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-    CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(type);
-    CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tasks_planner_id ON tasks(planner_id);
     CREATE INDEX IF NOT EXISTS idx_executions_task_id ON executions(task_id);
     CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status);
-    CREATE INDEX IF NOT EXISTS idx_proposals_execution_id ON proposals(execution_id);
+    CREATE INDEX IF NOT EXISTS idx_proposals_task_id ON proposals(task_id);
     CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+    CREATE INDEX IF NOT EXISTS idx_execution_logs_execution_id ON execution_logs(execution_id);
 
     -- Update trigger function
     CREATE OR REPLACE FUNCTION update_updated_at_column()
