@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATABASE_URL=postgresql://cda:cda@postgres:5432/cda
+      - REDIS_URL=redis://redis:6379
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - HETZNER_API_TOKEN=${HETZNER_API_TOKEN}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - PLANNER_PLAN_ID=${PLANNER_PLAN_ID}
+      - CORS_ORIGIN=http://localhost:5173
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cda-network
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dashboard
+    ports:
+      - "5173:80"
+    environment:
+      - VITE_API_URL=http://localhost:3000
+      - VITE_WS_URL=ws://localhost:3000
+    depends_on:
+      - api
+    networks:
+      - cda-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=cda
+      - POSTGRES_PASSWORD=cda
+      - POSTGRES_DB=cda
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - cda-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cda -d cda"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - cda-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  executor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.executor
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - HETZNER_API_TOKEN=${HETZNER_API_TOKEN}
+    volumes:
+      - executor_workspaces:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cda-network
+    profiles:
+      - executor
+    restart: "no"
+
+networks:
+  cda-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  executor_workspaces:

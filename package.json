@@ -1,0 +1,32 @@
+{
+  "name": "claude-dev-automation",
+  "version": "1.0.0",
+  "description": "Cloud-native web service that orchestrates development tasks from Microsoft Planner using Claude Code Terminal",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "clean": "pnpm -r run clean",
+    "db:migrate": "pnpm --filter @cda/api run db:migrate",
+    "db:seed": "pnpm --filter @cda/api run db:seed",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "keywords": [
+    "claude",
+    "automation",
+    "planner",
+    "development",
+    "ai"
+  ],
+  "author": "CDA Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}
