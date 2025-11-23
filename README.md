@@ -5,7 +5,7 @@ A cloud-native web service that orchestrates development tasks from Microsoft Pl
 ## Features
 
 - **Planner Integration**: Automatically sync tasks from Microsoft Planner
-- **AI-Powered Execution**: Uses Claude Code to execute development tasks
+- **AI-Powered Execution**: Uses Claude Code Terminal to execute development tasks
 - **Real-Time Dashboard**: Monitor all operations with live terminal output
 - **Proposal System**: Review and approve AI-generated decisions
 - **Full CLI Access**: Pre-installed development tools in execution container
@@ -16,8 +16,8 @@ A cloud-native web service that orchestrates development tasks from Microsoft Pl
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │                 │     │                 │     │                 │
-│   Dashboard     │◄────│    API Server   │◄────│   Executor      │
-│   (React)       │     │   (Fastify)     │     │   (Docker)      │
+│   Dashboard     │◄────│    API Server   │◄────│  Claude Code    │
+│   (React)       │     │   (Fastify)     │     │   Terminal      │
 │                 │     │                 │     │                 │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
                                │
@@ -34,150 +34,301 @@ A cloud-native web service that orchestrates development tasks from Microsoft Pl
 
 - Node.js 20+
 - pnpm 8+
-- Docker & Docker Compose
-- PostgreSQL 15+ (or use Docker)
-- Redis 7+ (or use Docker)
+- Docker & Docker Compose (optional, for databases)
+- Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
-### Development Setup
+### 1. Clone and Install
 
-1. Clone the repository:
 ```bash
 git clone https://github.com/mbarki-abd/Claude-Dev-Automation-CDA.git
 cd Claude-Dev-Automation-CDA
-```
-
-2. Install dependencies:
-```bash
 pnpm install
 ```
 
-3. Copy environment variables:
-```bash
-cp .env.example .env
-# Edit .env with your API keys
+### 2. Configure Claude Code Terminal
+
+Run the setup script:
+
+```powershell
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File scripts/setup-claude-code.ps1
 ```
 
-4. Start infrastructure with Docker:
+This script will:
+- Check if Claude Code CLI is installed
+- Help you authenticate (Claude.ai account or API key)
+- Configure MCP servers
+- Save settings to `.env`
+
+**Authentication Options:**
+
+| Method | Description | Best For |
+|--------|-------------|----------|
+| **Claude.ai** | Uses your Claude.ai subscription | Most users - no API key needed |
+| **API Key** | Uses Anthropic API directly | Enterprise/custom integrations |
+
+### 3. Configure Microsoft 365 (Optional)
+
+For Planner integration:
+
+```powershell
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File scripts/setup-microsoft365.ps1
+```
+
+This creates an Azure AD App Registration with the required permissions:
+- User.Read
+- Tasks.ReadWrite
+- Tasks.Read
+- Group.Read.All
+
+### 4. Start Development
+
+```bash
+# Start both API and Dashboard
+pnpm dev
+
+# Or start individually
+pnpm dev:api        # API at http://localhost:3000
+pnpm dev:dashboard  # Dashboard at http://localhost:5173
+```
+
+### 5. (Optional) Start Databases with Docker
+
 ```bash
 cd infrastructure
 docker-compose up -d postgres redis
-```
-
-5. Run database migrations:
-```bash
+cd ..
 pnpm db:migrate
 ```
 
-6. Start development servers:
+## Claude Code Integration
+
+### How It Works
+
+CDA uses Claude Code Terminal as its execution engine:
+
+1. **Tasks** are defined in Microsoft Planner (or created in dashboard)
+2. **CDA** interprets tasks and creates execution plans
+3. **Claude Code** executes the plans with full CLI access
+4. **Output** streams in real-time to the dashboard
+5. **Proposals** are generated when decisions are needed
+
+### Authentication
+
+#### Using Claude.ai Account (Recommended)
+
 ```bash
-pnpm dev
+# Login to Claude.ai
+claude login
+
+# Your browser will open for authentication
+# After login, CDA can use Claude Code automatically
 ```
 
-The API will be available at http://localhost:3000 and the dashboard at http://localhost:5173.
+#### Using API Key
 
-### Using Docker Compose
-
-To run the full stack with Docker:
-
-```bash
-cd infrastructure
-docker-compose up -d
+1. Get API key from: https://console.anthropic.com/settings/keys
+2. Set in `.env`:
+```env
+CLAUDE_CODE_AUTH=api-key
+ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
+
+### Available Models
+
+| Model | ID | Description |
+|-------|-----|-------------|
+| Claude Sonnet 4 | `claude-sonnet-4-20250514` | Default, best balance |
+| Claude Opus 4 | `claude-opus-4-20250514` | Most capable |
+| Claude Haiku | `claude-haiku-*` | Fastest, most economical |
+
+Configure in `.env`:
+```env
+CLAUDE_CODE_MODEL=claude-sonnet-4-20250514
+```
+
+### MCP Servers
+
+Claude Code supports MCP (Model Context Protocol) for extended capabilities:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@anthropic-ai/mcp-server-filesystem"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@anthropic-ai/mcp-server-github"],
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+    }
+  }
+}
+```
+
+## Microsoft 365 / Planner Setup
+
+### Step-by-Step Guide
+
+1. **Run Setup Script**
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts/setup-microsoft365.ps1
+   ```
+
+2. **Azure AD App Registration is created with:**
+   - Redirect URIs for localhost
+   - Microsoft Graph API permissions
+   - Client secret (valid 2 years)
+
+3. **Find Your Planner Plan ID**
+   - Open: https://tasks.office.com
+   - Navigate to your Plan
+   - Copy Plan ID from URL: `...planId=<PLAN_ID>&...`
+
+4. **Grant Admin Consent**
+   - Script provides consent URL
+   - Admin must approve API permissions
+
+### Required Permissions
+
+| Permission | Type | Description |
+|------------|------|-------------|
+| User.Read | Delegated | Read user profile |
+| Tasks.ReadWrite | Delegated | Manage Planner tasks |
+| Tasks.Read | Delegated | Read Planner tasks |
+| Group.Read.All | Delegated | Read groups for plans |
 
 ## Project Structure
 
 ```
 claude-dev-automation/
 ├── apps/
-│   ├── api/           # Backend API service (Fastify)
-│   └── dashboard/     # Frontend React application
+│   ├── api/                    # Backend API (Fastify)
+│   │   └── src/
+│   │       ├── routes/         # REST endpoints
+│   │       ├── services/       # Business logic
+│   │       │   ├── ClaudeCodeService.ts
+│   │       │   └── RedisService.ts
+│   │       └── database/       # PostgreSQL
+│   └── dashboard/              # Frontend (React + Vite)
 ├── packages/
-│   └── shared/        # Shared types and utilities
-├── docker/            # Dockerfiles
-├── infrastructure/    # Docker Compose & deployment configs
-└── scripts/           # Utility scripts
+│   └── shared/                 # Shared types
+├── scripts/
+│   ├── setup-claude-code.ps1   # Claude Code setup
+│   └── setup-microsoft365.ps1  # Azure AD setup
+├── tests/
+│   └── e2e/                    # Playwright tests
+├── docker/                     # Dockerfiles
+└── infrastructure/             # Docker Compose
 ```
-
-## API Endpoints
-
-### Tasks
-- `GET /api/tasks` - List all tasks
-- `GET /api/tasks/:id` - Get task details
-- `POST /api/tasks` - Create task
-- `PATCH /api/tasks/:id` - Update task
-- `DELETE /api/tasks/:id` - Delete task
-- `POST /api/tasks/:id/execute` - Start execution
-- `POST /api/tasks/:id/cancel` - Cancel execution
-
-### Executions
-- `GET /api/executions` - List executions
-- `GET /api/executions/:id` - Get execution details
-- `GET /api/executions/:id/logs` - Get execution logs
-
-### Proposals
-- `GET /api/proposals` - List proposals
-- `GET /api/proposals/pending` - Get pending proposals
-- `POST /api/proposals/:id/approve` - Approve proposal
-- `POST /api/proposals/:id/reject` - Reject proposal
-
-### Health
-- `GET /api/health` - Full health check
-- `GET /api/health/live` - Liveness probe
-- `GET /api/health/ready` - Readiness probe
-
-## WebSocket Events
-
-Connect to `/socket.io` for real-time updates:
-
-### Server → Client
-- `task:started` - Task execution began
-- `task:output` - Terminal output
-- `task:completed` - Task finished
-- `task:failed` - Task failed
-- `proposal:created` - New proposal
-
-### Client → Server
-- `task:cancel` - Request cancellation
-- `proposal:resolve` - Approve proposal
-- `terminal:resize` - Resize terminal
-- `sync:trigger` - Manual Planner sync
 
 ## Environment Variables
 
 ```env
-# API Configuration
-PORT=3000
-NODE_ENV=development
+# ============================================
+# CLAUDE CODE TERMINAL
+# ============================================
+CLAUDE_CODE_AUTH=claude-ai          # or "api-key"
+# ANTHROPIC_API_KEY=sk-ant-...      # Only if api-key auth
+CLAUDE_CODE_MODEL=claude-sonnet-4-20250514
+CLAUDE_CODE_MAX_TOKENS=8192
+CLAUDE_CODE_TIMEOUT=300000
 
-# Database
-DATABASE_URL=postgresql://cda:cda@localhost:5432/cda
-
-# Redis
-REDIS_URL=redis://localhost:6379
-
-# Microsoft 365 (for Planner integration)
+# ============================================
+# MICROSOFT 365 / AZURE AD
+# ============================================
 AZURE_CLIENT_ID=your-client-id
 AZURE_CLIENT_SECRET=your-client-secret
 AZURE_TENANT_ID=your-tenant-id
 PLANNER_PLAN_ID=your-plan-id
 
-# Anthropic
-ANTHROPIC_API_KEY=your-api-key
+# ============================================
+# DATABASE & CACHE
+# ============================================
+DATABASE_URL=postgresql://cda:cda@localhost:5432/cda
+REDIS_URL=redis://localhost:6379
 
-# GitHub
+# ============================================
+# INTEGRATIONS
+# ============================================
 GITHUB_TOKEN=your-github-token
-
-# Hetzner (optional)
 HETZNER_API_TOKEN=your-hetzner-token
+
+# ============================================
+# API
+# ============================================
+PORT=3000
+NODE_ENV=development
 ```
 
-## Pre-installed CLI Tools (Executor Container)
+## API Reference
 
-- **Development**: claude, git, gh, node, npm, pnpm, python, pip, go
-- **Cloud**: gcloud, hcloud, aws, az
-- **Infrastructure**: docker, kubectl, terraform, ansible, helm
-- **Remote**: ssh, scp, rsync
-- **Utilities**: jq, yq, curl, wget, htop
+### Tasks
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/tasks` | List all tasks |
+| GET | `/api/tasks/:id` | Get task details |
+| POST | `/api/tasks` | Create task |
+| PATCH | `/api/tasks/:id` | Update task |
+| DELETE | `/api/tasks/:id` | Delete task |
+| POST | `/api/tasks/:id/execute` | Start execution |
+| POST | `/api/tasks/:id/cancel` | Cancel execution |
+
+### Health
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health` | Full health check |
+| GET | `/api/health/live` | Liveness probe |
+| GET | `/api/health/ready` | Readiness probe |
+
+## Testing
+
+```bash
+# Run E2E tests with Playwright
+pnpm test:e2e
+
+# Run with UI
+pnpm test:e2e:ui
+
+# Run headed (visible browser)
+pnpm test:e2e:headed
+```
+
+## Troubleshooting
+
+### Claude Code not authenticated
+
+```bash
+# Re-login to Claude.ai
+claude login
+
+# Or check API key
+echo $ANTHROPIC_API_KEY
+```
+
+### Azure AD permission errors
+
+1. Ensure admin consent was granted
+2. Check App Registration in Azure Portal
+3. Verify redirect URIs match your setup
+
+### Database connection failed
+
+```bash
+# Start PostgreSQL with Docker
+cd infrastructure
+docker-compose up -d postgres
+```
+
+## Documentation Links
+
+- **Claude Code**: https://docs.anthropic.com/claude-code
+- **Claude API**: https://docs.anthropic.com/api
+- **MCP Protocol**: https://modelcontextprotocol.io
+- **Microsoft Graph**: https://learn.microsoft.com/graph/
+- **Planner API**: https://learn.microsoft.com/graph/planner-concept-overview
 
 ## License
 
@@ -188,4 +339,5 @@ MIT
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Submit a pull request
+4. Run tests: `pnpm test:e2e`
+5. Submit a pull request
