@@ -1,0 +1,45 @@
+# Docker Compose for Unified Container
+# All services (PostgreSQL, Redis, API, Dashboard) run in a single container
+
+version: '3.8'
+
+services:
+  cda:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.unified
+    image: claude-dev-automation:unified
+    container_name: cda-unified
+    ports:
+      - "8080:80"       # Dashboard + API (via nginx)
+    volumes:
+      # Persist database and redis data
+      - cda-postgres-data:/data/postgres
+      - cda-redis-data:/data/redis
+      # Logs
+      - cda-logs:/var/log/supervisor
+    environment:
+      # Claude Code configuration
+      - CLAUDE_CODE_AUTH=${CLAUDE_CODE_AUTH:-claude-ai}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLAUDE_CODE_MODEL=${CLAUDE_CODE_MODEL:-claude-sonnet-4-20250514}
+      # Microsoft 365 / Azure AD
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
+      - PLANNER_PLAN_ID=${PLANNER_PLAN_ID:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/api/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  cda-postgres-data:
+    driver: local
+  cda-redis-data:
+    driver: local
+  cda-logs:
+    driver: local

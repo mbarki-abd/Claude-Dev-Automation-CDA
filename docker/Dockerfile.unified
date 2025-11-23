@@ -1,0 +1,119 @@
+# Unified Dockerfile - All components in a single container
+# Includes: PostgreSQL, Redis, API, Dashboard (nginx)
+
+FROM node:20-alpine AS base
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /app
+
+# Copy workspace configuration
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY tsconfig.base.json ./
+
+# Copy package.json files for all packages
+COPY packages/shared/package.json ./packages/shared/
+COPY apps/api/package.json ./apps/api/
+COPY apps/dashboard/package.json ./apps/dashboard/
+
+# Install dependencies
+FROM base AS deps
+RUN pnpm install --frozen-lockfile
+
+# Build stage
+FROM deps AS builder
+
+# Copy source files
+COPY packages/shared ./packages/shared
+COPY apps/api ./apps/api
+COPY apps/dashboard ./apps/dashboard
+
+# Build all packages
+RUN pnpm --filter @cda/shared build
+RUN pnpm --filter @cda/api build
+RUN pnpm --filter @cda/dashboard build
+
+# Production stage - unified container with all services
+FROM alpine:3.19 AS runner
+
+# Install required packages
+RUN apk add --no-cache \
+    nodejs \
+    npm \
+    nginx \
+    postgresql16 \
+    postgresql16-contrib \
+    redis \
+    supervisor \
+    bash \
+    curl
+
+# Enable corepack for pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Create directories
+RUN mkdir -p /app /run/postgresql /run/nginx /var/log/supervisor /data/postgres /data/redis
+
+# Set up PostgreSQL
+ENV PGDATA=/data/postgres
+RUN chown -R postgres:postgres /data/postgres /run/postgresql
+RUN su postgres -c "initdb -D /data/postgres"
+
+# Configure PostgreSQL
+RUN echo "host all all 0.0.0.0/0 md5" >> /data/postgres/pg_hba.conf && \
+    echo "listen_addresses = 'localhost'" >> /data/postgres/postgresql.conf && \
+    echo "port = 5432" >> /data/postgres/postgresql.conf
+
+# Set up Redis
+RUN chown -R redis:redis /data/redis
+
+# Copy application files
+WORKDIR /app
+
+# Copy built files from builder
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/packages/shared/package.json ./packages/shared/
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/apps/api/package.json ./apps/api/
+COPY --from=builder /app/apps/api/dist ./apps/api/dist
+
+# Copy dashboard static files
+COPY --from=builder /app/apps/dashboard/dist /usr/share/nginx/html
+
+# Install production dependencies
+RUN pnpm install --prod --ignore-scripts 2>/dev/null || npm install --omit=dev
+
+# Copy nginx configuration
+COPY docker/nginx.unified.conf /etc/nginx/http.d/default.conf
+
+# Copy supervisord configuration
+COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Copy initialization script
+COPY docker/init-db.sh /docker-entrypoint-initdb.d/init-db.sh
+RUN chmod +x /docker-entrypoint-initdb.d/init-db.sh
+
+# Copy entrypoint script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Environment variables
+ENV NODE_ENV=production
+ENV DATABASE_URL=postgresql://cda:cda_password@localhost:5432/cda
+ENV REDIS_URL=redis://localhost:6379
+ENV API_PORT=3000
+ENV HOST=0.0.0.0
+
+# Expose ports
+# 80 - Nginx (Dashboard + API proxy)
+EXPOSE 80
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost/api/health/live || exit 1
+
+# Start all services via supervisord
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf", "-n"]
