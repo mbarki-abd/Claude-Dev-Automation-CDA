@@ -1,4 +1,4 @@
-import { query, transaction } from '../client.js';
+import { query } from '../client.js';
 import type { Task, TaskStatus, TaskType, TaskInterpretation } from '@cda/shared';
 
 interface TaskRow {

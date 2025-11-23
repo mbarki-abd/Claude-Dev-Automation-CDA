@@ -14,7 +14,12 @@
     "db:seed": "pnpm --filter @cda/api run db:seed",
     "docker:build": "docker-compose build",
     "docker:up": "docker-compose up -d",
-    "docker:down": "docker-compose down"
+    "docker:down": "docker-compose down",
+    "dev:api": "pnpm --filter @cda/api dev",
+    "dev:dashboard": "pnpm --filter @cda/dashboard dev",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed"
   },
   "keywords": [
     "claude",
@@ -28,5 +33,9 @@
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=8.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "playwright": "^1.56.1"
   }
 }

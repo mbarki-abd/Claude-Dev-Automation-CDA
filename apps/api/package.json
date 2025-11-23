@@ -24,7 +24,7 @@
     "pg": "^8.11.0",
     "ioredis": "^5.3.0",
     "bullmq": "^5.1.0",
-    "node-pty": "^1.0.0",
+    
     "@azure/msal-node": "^2.6.0",
     "@microsoft/microsoft-graph-client": "^3.0.0",
     "dockerode": "^4.0.0",

@@ -32,7 +32,7 @@ const listQuerySchema = z.object({
 
 export const taskRoutes: FastifyPluginAsync = async (fastify) => {
   // List all tasks
-  fastify.get('/api/tasks', async (request, reply) => {
+  fastify.get('/api/tasks', async (request) => {
     const query = listQuerySchema.parse(request.query);
     const offset = (query.page - 1) * query.limit;
 
