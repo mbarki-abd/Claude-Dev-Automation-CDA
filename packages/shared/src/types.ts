@@ -90,6 +90,22 @@ export interface ExecutionLog {
   data: string;
 }
 
+// System Log Types
+export type SystemLogLevel = 'info' | 'warning' | 'error' | 'success';
+export type SystemLogCategory = 'planner' | 'api' | 'execution' | 'system';
+
+export interface SystemLog {
+  id: string;
+  level: SystemLogLevel;
+  category: SystemLogCategory;
+  source: string;
+  message: string;
+  details?: string;
+  taskId?: string;
+  metadata?: Record<string, unknown>;
+  timestamp: Date;
+}
+
 // Proposal Types
 export type ProposalType =
   | 'implementation'

@@ -1,0 +1,7 @@
+{
+  "displayName": "CDA Automation",
+  "mailNickname": "cda-automation",
+  "groupTypes": ["Unified"],
+  "mailEnabled": true,
+  "securityEnabled": false
+}

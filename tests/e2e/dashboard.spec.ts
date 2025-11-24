@@ -7,8 +7,10 @@ test.describe('Dashboard', () => {
     // Check that the sidebar navigation links are visible (use exact names from sidebar)
     await expect(page.locator('nav').getByRole('link', { name: 'Dashboard', exact: true })).toBeVisible();
     await expect(page.locator('nav').getByRole('link', { name: 'Tasks', exact: true })).toBeVisible();
+    await expect(page.locator('nav').getByRole('link', { name: 'Logs', exact: true })).toBeVisible();
     await expect(page.locator('nav').getByRole('link', { name: 'Terminal', exact: true })).toBeVisible();
     await expect(page.locator('nav').getByRole('link', { name: 'Proposals', exact: true })).toBeVisible();
+    await expect(page.locator('nav').getByRole('link', { name: 'CLI Auth', exact: true })).toBeVisible();
     await expect(page.locator('nav').getByRole('link', { name: 'Settings', exact: true })).toBeVisible();
 
     // Check the dashboard title

@@ -1,4 +1,4 @@
-import type { Task, Execution, Proposal, ApiResponse, PaginatedResponse } from '@cda/shared';
+import type { Task, Execution, Proposal, ApiResponse, PaginatedResponse, SystemLog } from '@cda/shared';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -168,5 +168,47 @@ export const healthApi = {
       uptime: number;
       checks: Record<string, { status: string; latency?: number }>;
     }>('/api/health');
+  },
+};
+
+// System Logs API
+export const systemLogsApi = {
+  list: async (params?: { category?: string; level?: string; page?: number; limit?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.category) searchParams.set('category', params.category);
+    if (params?.level) searchParams.set('level', params.level);
+    if (params?.page) searchParams.set('page', params.page.toString());
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+
+    const query = searchParams.toString();
+    return fetchApi<PaginatedResponse<SystemLog>>(`/api/system-logs${query ? `?${query}` : ''}`);
+  },
+
+  get: async (id: string) => {
+    return fetchApi<ApiResponse<SystemLog>>(`/api/system-logs/${id}`);
+  },
+};
+
+// Terminal API (Docker container console)
+export const terminalApi = {
+  execute: async (command: string, workDir?: string) => {
+    return fetchApi<ApiResponse<{ output: string; exitCode: number }>>('/api/terminal/execute', {
+      method: 'POST',
+      body: JSON.stringify({ command, workDir }),
+    });
+  },
+
+  listFiles: async (path: string) => {
+    return fetchApi<ApiResponse<{ files: Array<{ name: string; type: 'file' | 'directory'; size?: number }> }>>('/api/terminal/files', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+  },
+
+  claudeCode: async (prompt: string, workDir?: string) => {
+    return fetchApi<ApiResponse<{ output: string; exitCode: number }>>('/api/terminal/claude-code', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, workDir }),
+    });
   },
 };

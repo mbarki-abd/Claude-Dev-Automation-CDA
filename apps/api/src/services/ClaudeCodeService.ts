@@ -111,6 +111,7 @@ export class ClaudeCodeService extends EventEmitter {
       // Build command arguments
       const args = [
         '--print',  // Non-interactive mode, print response
+        '--dangerously-skip-permissions',  // Allow all tools without prompting (for automation)
         '--model', this.config.model || 'claude-sonnet-4-20250514',
       ];
 

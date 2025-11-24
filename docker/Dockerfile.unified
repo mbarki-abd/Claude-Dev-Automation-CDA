@@ -55,10 +55,16 @@ RUN apk add --no-cache \
     redis \
     supervisor \
     bash \
-    curl
+    curl \
+    git \
+    python3 \
+    py3-pip
 
-# Create directories
-RUN mkdir -p /app /run/postgresql /run/nginx /var/log/supervisor /data/postgres /data/redis
+# Install Claude Code CLI (if available via npm)
+RUN npm install -g @anthropic-ai/claude-code || echo "Claude Code CLI not available via npm, will use mounted binary"
+
+# Create directories including workspace
+RUN mkdir -p /app /run/postgresql /run/nginx /var/log/supervisor /data/postgres /data/redis /workspace
 
 # Set up PostgreSQL
 ENV PGDATA=/data/postgres
@@ -104,6 +110,8 @@ ENV DATABASE_URL=postgresql://cda:cda_password@localhost:5432/cda
 ENV REDIS_URL=redis://localhost:6379
 ENV API_PORT=3000
 ENV HOST=0.0.0.0
+ENV WORKSPACE_DIR=/workspace
+ENV CLAUDE_CODE_PATH=claude
 
 # Expose ports
 # 80 - Nginx (Dashboard + API proxy)

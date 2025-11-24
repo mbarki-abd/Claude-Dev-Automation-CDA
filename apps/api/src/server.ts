@@ -6,7 +6,18 @@ import { healthRoutes } from './routes/health.js';
 import { taskRoutes } from './routes/tasks.js';
 import { executionRoutes } from './routes/executions.js';
 import { proposalRoutes } from './routes/proposals.js';
+import { settingsRoutes } from './routes/settings.js';
+import { plannerRoutes } from './routes/planner.js';
+import { systemLogsRoutes } from './routes/system-logs.js';
+import { terminalRoutes } from './routes/terminal.js';
+import { cliAuthRoutes } from './routes/cli-auth.js';
 import { WS_EVENTS } from '@cda/shared';
+import { cliAuthService } from './services/CLIAuthService.js';
+import { taskRepository } from './database/repositories/TaskRepository.js';
+import { executionRepository } from './database/repositories/ExecutionRepository.js';
+import { proposalRepository } from './database/repositories/ProposalRepository.js';
+import { claudeCodeService } from './services/ClaudeCodeService.js';
+import { plannerSyncService } from './services/PlannerSyncService.js';
 
 const logger = createChildLogger('server');
 
@@ -55,6 +66,11 @@ export async function createServer() {
   await fastify.register(taskRoutes);
   await fastify.register(executionRoutes);
   await fastify.register(proposalRoutes);
+  await fastify.register(settingsRoutes);
+  await fastify.register(plannerRoutes);
+  await fastify.register(systemLogsRoutes);
+  await fastify.register(terminalRoutes);
+  await fastify.register(cliAuthRoutes);
 
   // Root route
   fastify.get('/', async () => {
@@ -93,34 +109,124 @@ export function setupWebSocket(server: ReturnType<typeof Fastify>['server']) {
 
     // Handle task cancellation
     socket.on(WS_EVENTS.TASK_CANCEL, async (data: { taskId: string }) => {
-      logger.info({ socketId: socket.id, taskId: data.taskId }, 'Task cancellation requested');
-      // TODO: Implement cancellation logic
+      logger.info({ socketId: socket.id, taskId: data.taskId }, 'Task cancellation requested via WebSocket');
+      try {
+        const task = await taskRepository.findById(data.taskId);
+        if (!task) {
+          socket.emit('error', { message: 'Task not found' });
+          return;
+        }
+
+        if (task.status !== 'executing' && task.status !== 'queued') {
+          socket.emit('error', { message: 'Task is not in a cancellable state' });
+          return;
+        }
+
+        // Find and cancel the running execution
+        const latestExecution = await executionRepository.findLatestByTaskId(task.id);
+        if (latestExecution && latestExecution.status === 'running') {
+          const cancelled = claudeCodeService.cancel(latestExecution.id);
+          if (cancelled) {
+            await executionRepository.complete(latestExecution.id, {
+              status: 'cancelled',
+              error: 'Cancelled by user via WebSocket',
+              exitCode: 130,
+            });
+          }
+        }
+
+        const updatedTask = await taskRepository.updateStatus(task.id, 'cancelled');
+
+        // Emit task update to all subscribers
+        io.to(`task:${data.taskId}`).emit(WS_EVENTS.TASK_UPDATE, updatedTask);
+        io.emit(WS_EVENTS.TASK_UPDATE, updatedTask);
+      } catch (error) {
+        logger.error({ error, taskId: data.taskId }, 'Failed to cancel task');
+        socket.emit('error', { message: 'Failed to cancel task' });
+      }
     });
 
     // Handle proposal resolution
-    socket.on(WS_EVENTS.PROPOSAL_RESOLVE, async (data: { proposalId: string; option: string }) => {
+    socket.on(WS_EVENTS.PROPOSAL_RESOLVE, async (data: { proposalId: string; optionId: string }) => {
       logger.info(
-        { socketId: socket.id, proposalId: data.proposalId, option: data.option },
-        'Proposal resolution received'
+        { socketId: socket.id, proposalId: data.proposalId, optionId: data.optionId },
+        'Proposal resolution received via WebSocket'
       );
-      // TODO: Implement resolution logic
+      try {
+        const proposal = await proposalRepository.findById(data.proposalId);
+        if (!proposal) {
+          socket.emit('error', { message: 'Proposal not found' });
+          return;
+        }
+
+        if (proposal.status !== 'pending') {
+          socket.emit('error', { message: 'Proposal has already been resolved' });
+          return;
+        }
+
+        const resolved = await proposalRepository.resolve(data.proposalId, data.optionId);
+
+        // Emit proposal update
+        io.emit(WS_EVENTS.PROPOSAL_RESOLVED, resolved);
+
+        // Also emit to task subscribers
+        if (proposal.taskId) {
+          io.to(`task:${proposal.taskId}`).emit(WS_EVENTS.PROPOSAL_RESOLVED, resolved);
+        }
+      } catch (error) {
+        logger.error({ error, proposalId: data.proposalId }, 'Failed to resolve proposal');
+        socket.emit('error', { message: 'Failed to resolve proposal' });
+      }
     });
 
-    // Handle terminal resize
+    // Handle terminal resize (forward to terminal manager if implemented)
     socket.on(WS_EVENTS.TERMINAL_RESIZE, (data: { taskId: string; cols: number; rows: number }) => {
       logger.debug({ socketId: socket.id, ...data }, 'Terminal resize');
-      // TODO: Forward to terminal manager
+      // Forward to all clients watching this task for terminal sync
+      io.to(`task:${data.taskId}`).emit(WS_EVENTS.TERMINAL_RESIZE, data);
     });
 
     // Handle sync trigger
-    socket.on(WS_EVENTS.SYNC_TRIGGER, () => {
-      logger.info({ socketId: socket.id }, 'Manual sync triggered');
-      // TODO: Trigger Planner sync
+    socket.on(WS_EVENTS.SYNC_TRIGGER, async () => {
+      logger.info({ socketId: socket.id }, 'Manual Planner sync triggered via WebSocket');
+      try {
+        const result = await plannerSyncService.syncAllTasks();
+        socket.emit('sync:complete', {
+          success: true,
+          synced: result.synced,
+          failed: result.failed,
+        });
+      } catch (error) {
+        logger.error({ error }, 'Failed to sync with Planner');
+        socket.emit('sync:complete', { success: false, error: 'Sync failed' });
+      }
+    });
+
+    // CLI Auth subscriptions
+    socket.on('subscribe:cli-auth', (sessionId: string) => {
+      socket.join(`cli-auth:${sessionId}`);
+      logger.debug({ socketId: socket.id, sessionId }, 'Subscribed to CLI auth session');
+    });
+
+    socket.on('unsubscribe:cli-auth', (sessionId: string) => {
+      socket.leave(`cli-auth:${sessionId}`);
+      logger.debug({ socketId: socket.id, sessionId }, 'Unsubscribed from CLI auth session');
     });
 
     socket.on('disconnect', () => {
       logger.info({ socketId: socket.id }, 'Client disconnected');
     });
+  });
+
+  // Forward CLI auth service events to WebSocket clients
+  cliAuthService.on('progress', (data) => {
+    io.to(`cli-auth:${data.sessionId}`).emit('cli-auth:progress', data);
+    io.emit('cli-auth:progress', data); // Also emit globally
+    logger.debug({ sessionId: data.sessionId, status: data.status }, 'CLI auth progress emitted');
+  });
+
+  cliAuthService.on('output', (data) => {
+    io.to(`cli-auth:${data.sessionId}`).emit('cli-auth:output', data);
   });
 
   return io;

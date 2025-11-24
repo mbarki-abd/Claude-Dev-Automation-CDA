@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
 
-// Use environment variable or default to localhost:8080 for Docker testing
-const API_URL = process.env.API_URL || 'http://localhost:8080';
+// API tests use baseURL from Playwright config
+// - For production (playwright.production.config.ts): https://cda.ilinqsoft.com
+// - For docker (playwright.docker.config.ts): http://localhost:8080
 
 test.describe('API Health', () => {
-  test('should return health status', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/health`);
+  test('should return health status', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/health`);
 
     expect(response.ok()).toBeTruthy();
 
@@ -16,8 +17,8 @@ test.describe('API Health', () => {
     expect(body).toHaveProperty('uptime');
   });
 
-  test('should return live status', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/health/live`);
+  test('should return live status', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/health/live`);
 
     expect(response.ok()).toBeTruthy();
 
@@ -25,8 +26,8 @@ test.describe('API Health', () => {
     expect(body.status).toBe('ok');
   });
 
-  test('should return ready status', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/health/ready`);
+  test('should return ready status', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/health/ready`);
 
     expect(response.ok()).toBeTruthy();
 
@@ -39,9 +40,9 @@ test.describe('API Health', () => {
 // These tests require a running PostgreSQL database
 // Skip them when database is not available
 test.describe('API Tasks (requires database)', () => {
-  test.beforeEach(async ({ request }) => {
+  test.beforeEach(async ({ request, baseURL }) => {
     // Check if database is available
-    const healthResponse = await request.get(`${API_URL}/api/health/ready`);
+    const healthResponse = await request.get(`${baseURL}/api/health/ready`);
     const health = await healthResponse.json();
 
     // Check if database is available (status can be 'up' or 'connected')
@@ -51,8 +52,8 @@ test.describe('API Tasks (requires database)', () => {
     }
   });
 
-  test('should list tasks', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/tasks`);
+  test('should list tasks', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/tasks`);
 
     expect(response.ok()).toBeTruthy();
 
@@ -62,8 +63,8 @@ test.describe('API Tasks (requires database)', () => {
     expect(Array.isArray(body.data)).toBe(true);
   });
 
-  test('should return 404 for non-existent task', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/tasks/00000000-0000-0000-0000-000000000000`);
+  test('should return 404 for non-existent task', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/tasks/00000000-0000-0000-0000-000000000000`);
 
     expect(response.status()).toBe(404);
 
@@ -72,9 +73,9 @@ test.describe('API Tasks (requires database)', () => {
     expect(body.error.code).toBe('TASK_NOT_FOUND');
   });
 
-  test('should create and delete a task', async ({ request }) => {
+  test('should create and delete a task', async ({ request, baseURL }) => {
     // Create task
-    const createResponse = await request.post(`${API_URL}/api/tasks`, {
+    const createResponse = await request.post(`${baseURL}/api/tasks`, {
       data: {
         title: 'Test Task from Playwright',
         description: 'This is a test task created by Playwright',
@@ -93,7 +94,7 @@ test.describe('API Tasks (requires database)', () => {
     const taskId = createBody.data.id;
 
     // Delete task
-    const deleteResponse = await request.delete(`${API_URL}/api/tasks/${taskId}`);
+    const deleteResponse = await request.delete(`${baseURL}/api/tasks/${taskId}`);
 
     expect(deleteResponse.ok()).toBeTruthy();
 
@@ -102,9 +103,9 @@ test.describe('API Tasks (requires database)', () => {
     expect(deleteBody.data.deleted).toBe(true);
   });
 
-  test('should update a task', async ({ request }) => {
+  test('should update a task', async ({ request, baseURL }) => {
     // Create task first
-    const createResponse = await request.post(`${API_URL}/api/tasks`, {
+    const createResponse = await request.post(`${baseURL}/api/tasks`, {
       data: {
         title: 'Task to Update',
         type: 'development',
@@ -114,7 +115,7 @@ test.describe('API Tasks (requires database)', () => {
     const { data: task } = await createResponse.json();
 
     // Update task
-    const updateResponse = await request.patch(`${API_URL}/api/tasks/${task.id}`, {
+    const updateResponse = await request.patch(`${baseURL}/api/tasks/${task.id}`, {
       data: {
         title: 'Updated Task Title',
         priority: 1,
@@ -128,11 +129,11 @@ test.describe('API Tasks (requires database)', () => {
     expect(updateBody.data.priority).toBe(1);
 
     // Cleanup
-    await request.delete(`${API_URL}/api/tasks/${task.id}`);
+    await request.delete(`${baseURL}/api/tasks/${task.id}`);
   });
 
-  test('should get task stats', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/tasks/stats`);
+  test('should get task stats', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/tasks/stats`);
 
     expect(response.ok()).toBeTruthy();
 
@@ -145,8 +146,8 @@ test.describe('API Tasks (requires database)', () => {
 });
 
 test.describe('API Executions (requires database)', () => {
-  test.beforeEach(async ({ request }) => {
-    const healthResponse = await request.get(`${API_URL}/api/health/ready`);
+  test.beforeEach(async ({ request, baseURL }) => {
+    const healthResponse = await request.get(`${baseURL}/api/health/ready`);
     const health = await healthResponse.json();
 
     // Check if database is available (status can be 'up' or 'connected')
@@ -156,8 +157,8 @@ test.describe('API Executions (requires database)', () => {
     }
   });
 
-  test('should list executions', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/executions`);
+  test('should list executions', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/executions`);
 
     expect(response.ok()).toBeTruthy();
 
@@ -168,8 +169,8 @@ test.describe('API Executions (requires database)', () => {
 });
 
 test.describe('API Proposals (requires database)', () => {
-  test.beforeEach(async ({ request }) => {
-    const healthResponse = await request.get(`${API_URL}/api/health/ready`);
+  test.beforeEach(async ({ request, baseURL }) => {
+    const healthResponse = await request.get(`${baseURL}/api/health/ready`);
     const health = await healthResponse.json();
 
     // Check if database is available (status can be 'up' or 'connected')
@@ -179,8 +180,8 @@ test.describe('API Proposals (requires database)', () => {
     }
   });
 
-  test('should list proposals', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/proposals`);
+  test('should list proposals', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/proposals`);
 
     expect(response.ok()).toBeTruthy();
 
@@ -189,8 +190,8 @@ test.describe('API Proposals (requires database)', () => {
     expect(Array.isArray(body.data)).toBe(true);
   });
 
-  test('should list pending proposals', async ({ request }) => {
-    const response = await request.get(`${API_URL}/api/proposals/pending`);
+  test('should list pending proposals', async ({ request, baseURL }) => {
+    const response = await request.get(`${baseURL}/api/proposals/pending`);
 
     expect(response.ok()).toBeTruthy();
 

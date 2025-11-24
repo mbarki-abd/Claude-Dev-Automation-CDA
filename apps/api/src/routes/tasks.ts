@@ -1,8 +1,14 @@
 import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { taskRepository } from '../database/repositories/TaskRepository.js';
+import { executionRepository } from '../database/repositories/ExecutionRepository.js';
+import { claudeCodeService } from '../services/ClaudeCodeService.js';
+import { plannerSyncService } from '../services/PlannerSyncService.js';
+import { createChildLogger } from '../utils/logger.js';
 import { TASK_TYPES, TASK_STATUSES } from '@cda/shared';
 import type { ApiResponse, Task } from '@cda/shared';
+
+const logger = createChildLogger('task-routes');
 
 const createTaskSchema = z.object({
   title: z.string().min(1).max(500),
@@ -84,8 +90,26 @@ export const taskRoutes: FastifyPluginAsync = async (fastify) => {
       type: body.type as Task['type'],
     });
 
+    // Auto-create in Planner (async, don't block)
+    plannerSyncService.createPlannerTask(task).catch(err =>
+      logger.warn({ err, taskId: task.id }, 'Failed to create Planner task')
+    );
+
     reply.code(201);
     return { success: true, data: task };
+  });
+
+  // Sync all tasks to Planner
+  fastify.post('/api/tasks/sync-planner', async () => {
+    const result = await plannerSyncService.syncAllTasks();
+    return {
+      success: true,
+      data: {
+        message: `Synced ${result.synced} tasks to Planner`,
+        synced: result.synced,
+        failed: result.failed,
+      },
+    };
   });
 
   // Update task
@@ -131,12 +155,91 @@ export const taskRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     // Update status to executing
-    const updatedTask = await taskRepository.updateStatus(task.id, 'executing');
+    await taskRepository.updateStatus(task.id, 'executing');
 
-    // TODO: Trigger actual execution via ExecutionEngine
-    // This will be implemented when we add the execution queue
+    // Create execution record
+    const execution = await executionRepository.create({
+      taskId: task.id,
+    });
 
-    return { success: true, data: updatedTask };
+    logger.info({ taskId: task.id, executionId: execution.id }, 'Starting task execution');
+
+    // Execute asynchronously (don't await - fire and forget)
+    (async () => {
+      try {
+        const result = await claudeCodeService.executeTask(
+          execution.id,
+          {
+            title: task.title,
+            description: task.description,
+            type: task.type,
+            requiredTools: task.requiredTools,
+          }
+        );
+
+        // Update execution with result
+        await executionRepository.complete(execution.id, {
+          status: result.success ? 'completed' : 'failed',
+          output: result.output,
+          error: result.error,
+          exitCode: result.exitCode,
+        });
+
+        // Update task status
+        const updatedTask = await taskRepository.updateStatus(
+          task.id,
+          result.success ? 'completed' : 'failed'
+        );
+
+        // Get completed execution for sync
+        const completedExecution = await executionRepository.findById(execution.id);
+
+        // Sync to Planner (async, don't block)
+        if (updatedTask && completedExecution) {
+          plannerSyncService.syncTaskStatus(updatedTask).catch(err =>
+            logger.warn({ err }, 'Failed to sync task status to Planner')
+          );
+          plannerSyncService.addExecutionResults(updatedTask, completedExecution).catch(err =>
+            logger.warn({ err }, 'Failed to add execution results to Planner')
+          );
+        }
+
+        logger.info(
+          { taskId: task.id, executionId: execution.id, success: result.success },
+          'Task execution completed'
+        );
+      } catch (error) {
+        logger.error({ taskId: task.id, executionId: execution.id, error }, 'Task execution failed');
+
+        await executionRepository.complete(execution.id, {
+          status: 'failed',
+          error: (error as Error).message,
+          exitCode: 1,
+        });
+
+        const failedTask = await taskRepository.updateStatus(task.id, 'failed');
+        const failedExecution = await executionRepository.findById(execution.id);
+
+        // Sync failure to Planner
+        if (failedTask && failedExecution) {
+          plannerSyncService.syncTaskStatus(failedTask).catch(err =>
+            logger.warn({ err }, 'Failed to sync failed task to Planner')
+          );
+          plannerSyncService.addExecutionResults(failedTask, failedExecution).catch(err =>
+            logger.warn({ err }, 'Failed to add failure results to Planner')
+          );
+        }
+      }
+    })();
+
+    // Return immediately with execution info
+    return {
+      success: true,
+      data: {
+        task: await taskRepository.findById(task.id),
+        execution
+      }
+    };
   });
 
   // Cancel task execution
@@ -156,9 +259,26 @@ export const taskRoutes: FastifyPluginAsync = async (fastify) => {
       };
     }
 
-    const updatedTask = await taskRepository.updateStatus(task.id, 'cancelled');
+    // Find the active execution for this task
+    const latestExecution = await executionRepository.findLatestByTaskId(task.id);
 
-    // TODO: Actually cancel the running execution
+    if (latestExecution && latestExecution.status === 'running') {
+      // Cancel the running process
+      const cancelled = claudeCodeService.cancel(latestExecution.id);
+
+      if (cancelled) {
+        logger.info({ taskId: task.id, executionId: latestExecution.id }, 'Cancelled running execution');
+
+        // Update execution status
+        await executionRepository.complete(latestExecution.id, {
+          status: 'cancelled',
+          error: 'Cancelled by user',
+          exitCode: 130,
+        });
+      }
+    }
+
+    const updatedTask = await taskRepository.updateStatus(task.id, 'cancelled');
 
     return { success: true, data: updatedTask };
   });

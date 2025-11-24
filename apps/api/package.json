@@ -15,22 +15,23 @@
     "db:seed": "tsx src/database/seed.ts"
   },
   "dependencies": {
-    "@cda/shared": "workspace:*",
-    "fastify": "^4.25.0",
-    "@fastify/cors": "^8.5.0",
-    "@fastify/websocket": "^8.3.0",
-    "@fastify/static": "^6.12.0",
-    "socket.io": "^4.7.0",
-    "pg": "^8.11.0",
-    "ioredis": "^5.3.0",
-    "bullmq": "^5.1.0",
-    
     "@azure/msal-node": "^2.6.0",
+    "@cda/shared": "workspace:*",
+    "@fastify/cors": "^8.5.0",
+    "@fastify/static": "^6.12.0",
+    "@fastify/websocket": "^8.3.0",
     "@microsoft/microsoft-graph-client": "^3.0.0",
+    "@types/ssh2": "^1.15.5",
+    "bullmq": "^5.1.0",
     "dockerode": "^4.0.0",
+    "dotenv": "^16.3.0",
+    "fastify": "^4.25.0",
+    "ioredis": "^5.3.0",
+    "pg": "^8.11.0",
     "pino": "^8.17.0",
     "pino-pretty": "^10.3.0",
-    "dotenv": "^16.3.0",
+    "socket.io": "^4.7.0",
+    "ssh2": "^1.17.0",
     "uuid": "^9.0.0",
     "zod": "^3.22.0"
   },
@@ -38,9 +39,9 @@
     "@types/node": "^20.10.0",
     "@types/pg": "^8.10.0",
     "@types/uuid": "^9.0.0",
-    "typescript": "^5.3.0",
-    "tsx": "^4.7.0",
     "rimraf": "^5.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
     "vitest": "^1.1.0"
   }
 }

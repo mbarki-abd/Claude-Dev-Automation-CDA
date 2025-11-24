@@ -5,15 +5,19 @@ import {
   Terminal,
   MessageSquare,
   Settings,
-  Activity
+  Activity,
+  FileText,
+  Key
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Tasks', href: '/tasks', icon: ListTodo },
+  { name: 'Logs', href: '/logs', icon: FileText },
   { name: 'Terminal', href: '/terminal', icon: Terminal },
   { name: 'Proposals', href: '/proposals', icon: MessageSquare },
+  { name: 'CLI Auth', href: '/cli-auth', icon: Key },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 

@@ -119,7 +119,9 @@ export const WS_EVENTS = {
   TASK_OUTPUT: 'task:output',
   TASK_COMPLETED: 'task:completed',
   TASK_FAILED: 'task:failed',
+  TASK_UPDATE: 'task:update',
   PROPOSAL_CREATED: 'proposal:created',
+  PROPOSAL_RESOLVED: 'proposal:resolved',
   SYNC_UPDATE: 'sync:update',
 
   // Client to Server
