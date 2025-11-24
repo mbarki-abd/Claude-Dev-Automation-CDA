@@ -1,103 +1,18 @@
 import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { spawn, execSync } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ApiResponse } from '@cda/shared';
 import { createChildLogger } from '../utils/logger.js';
 import { addSystemLog } from './system-logs.js';
-import { settingsRepository } from '../database/repositories/SettingsRepository.js';
+import { terminalService } from '../services/TerminalService.js';
 
 const logger = createChildLogger('terminal');
 
 // Workspace configuration
-const WORKSPACE_DIR = process.env.WORKSPACE_DIR || '/workspace';
+const WORKSPACE_DIR = process.env.WORKSPACE_DIR || '/tmp/claude-workspace';
 const CLAUDE_CODE_PATH = process.env.CLAUDE_CODE_PATH || 'claude';
-
-// SSH execution helper for remote commands
-async function executeSSHCommand(command: string, workDir?: string): Promise<{ output: string; exitCode: number }> {
-  const settings = await settingsRepository.getHetznerSettings();
-
-  if (!settings) {
-    // Fall back to local execution if SSH not configured
-    try {
-      const output = execSync(command, {
-        cwd: workDir || WORKSPACE_DIR,
-        encoding: 'utf-8',
-        timeout: 30000,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-      return { output, exitCode: 0 };
-    } catch (error: any) {
-      return { output: error.stdout || error.message, exitCode: error.status || 1 };
-    }
-  }
-
-  // Use SSH for remote execution
-  const { Client } = await import('ssh2');
-
-  return new Promise((resolve) => {
-    const conn = new Client();
-    let resolved = false;
-
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        conn.end();
-        resolve({ output: 'Command timeout', exitCode: 124 });
-      }
-    }, 60000);
-
-    conn.on('ready', () => {
-      const fullCommand = workDir ? `cd ${workDir} && ${command}` : command;
-      conn.exec(fullCommand, (err, stream) => {
-        if (err) {
-          clearTimeout(timeout);
-          resolved = true;
-          conn.end();
-          resolve({ output: err.message, exitCode: 1 });
-          return;
-        }
-
-        let stdout = '';
-        let stderr = '';
-
-        stream.on('data', (data: Buffer) => {
-          stdout += data.toString();
-        });
-        stream.stderr.on('data', (data: Buffer) => {
-          stderr += data.toString();
-        });
-        stream.on('close', (code: number) => {
-          clearTimeout(timeout);
-          resolved = true;
-          conn.end();
-          const output = stdout + (stderr ? `\n${stderr}` : '');
-          resolve({ output, exitCode: code || 0 });
-        });
-      });
-    });
-
-    conn.on('error', (err) => {
-      clearTimeout(timeout);
-      if (!resolved) {
-        resolved = true;
-        resolve({ output: `SSH Error: ${err.message}`, exitCode: 1 });
-      }
-    });
-
-    conn.connect({
-      host: settings.host,
-      port: settings.port || 22,
-      username: settings.username,
-      password: settings.authMethod === 'password' ? settings.password : undefined,
-      privateKey: settings.authMethod === 'ssh-key' && settings.sshKeyPath
-        ? require('fs').readFileSync(settings.sshKeyPath)
-        : undefined,
-      readyTimeout: 10000
-    });
-  });
-}
 
 // Execute command schema
 const executeSchema = z.object({
@@ -186,8 +101,8 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
 
-      // Use SSH for remote execution if configured
-      const result = await executeSSHCommand(body.command, workDir);
+      // Execute command using terminal service (SSH or local)
+      const result = await terminalService.executeCommand(body.command, workDir);
 
       addSystemLog(
         result.exitCode === 0 ? 'success' : 'error',
@@ -304,32 +219,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
     });
 
     try {
-      // Check if we should use SSH (remote execution)
-      const settings = await settingsRepository.getHetznerSettings();
-
-      if (settings) {
-        // Execute Claude Code via SSH on remote server
-        const claudeCommand = `cd ${workDir} && claude --print --dangerously-skip-permissions "${body.prompt.replace(/"/g, '\\"')}"`;
-        const result = await executeSSHCommand(claudeCommand);
-
-        addSystemLog(
-          result.exitCode === 0 ? 'success' : 'error',
-          'execution',
-          'claude-code',
-          `Claude Code completed (remote)`,
-          {
-            details: result.output.slice(0, 500),
-            metadata: { exitCode: result.exitCode, outputLength: result.output.length },
-          }
-        );
-
-        return {
-          success: true,
-          data: result,
-        };
-      }
-
-      // Local execution
+      // Execute Claude Code locally in the container
       const args = [
         '--print',
         '--dangerously-skip-permissions',
