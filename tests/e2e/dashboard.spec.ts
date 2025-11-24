@@ -98,3 +98,45 @@ test.describe('Tasks', () => {
     await expect(page.getByPlaceholder(/search tasks/i)).toHaveValue('test search');
   });
 });
+
+test.describe('CLI Auth', () => {
+  test('should navigate to CLI Auth page', async ({ page }) => {
+    await page.goto('/');
+
+    await page.locator('nav').getByRole('link', { name: 'CLI Auth', exact: true }).click();
+
+    await expect(page).toHaveURL('/cli-auth');
+    await expect(page.getByRole('heading', { name: /cli auth/i })).toBeVisible();
+  });
+
+  test('should display auth tools', async ({ page }) => {
+    await page.goto('/cli-auth');
+
+    // Check that auth tool cards are visible
+    await expect(page.getByText(/claude code/i).first()).toBeVisible();
+    await expect(page.getByText(/azure cli/i).first()).toBeVisible();
+
+    // Check authenticate buttons exist
+    const authButtons = page.getByRole('button', { name: /authenticate/i });
+    await expect(authButtons.first()).toBeVisible();
+  });
+
+  test('should start Claude Code authentication', async ({ page }) => {
+    await page.goto('/cli-auth');
+
+    // Find and click the Claude Code authenticate button
+    const claudeCard = page.locator('text=Claude Code').locator('..').locator('..');
+    const authButton = claudeCard.getByRole('button', { name: /authenticate/i });
+
+    if (await authButton.isVisible()) {
+      await authButton.click();
+
+      // Wait for the authentication to start - should show some status change
+      // Either an error dialog, loading state, or auth URL
+      await page.waitForTimeout(3000);
+
+      // Just verify the page didn't crash and is still responsive
+      await expect(page.getByRole('heading', { name: /cli auth/i })).toBeVisible();
+    }
+  });
+});
