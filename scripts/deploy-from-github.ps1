@@ -65,9 +65,6 @@ ANTHROPIC_API_KEY=sk-ant-api03-0PoQzSNCwPvVkrMfpIo7MhR5FzZs2ZYsH3f2J6lU9uZT5aG7e
 $envB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($envContent))
 $result = Invoke-SSHCommand -SessionId $session.SessionId -Command "echo '$envB64' | base64 -d > /root/CDA/infrastructure/.env" -TimeOut 30
 
-# Fix nginx config for Linux
-$result = Invoke-SSHCommand -SessionId $session.SessionId -Command "sed -i 's/host\.docker\.internal:3000/172.17.0.1:3000/g' /root/CDA/infrastructure/nginx.native.conf" -TimeOut 10
-
 Write-Host "Environment files created" -ForegroundColor Green
 
 # Step 5: Build and deploy
