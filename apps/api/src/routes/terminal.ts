@@ -229,7 +229,8 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       return new Promise((resolve) => {
         const proc = spawn(CLAUDE_CODE_PATH, args, {
           cwd: workDir,
-          env: { ...process.env },
+          shell: true,
+          env: { ...process.env, PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/root/.local/bin' },
         });
 
         let stdout = '';

@@ -1,7 +1,5 @@
-import { Client, ClientChannel } from 'ssh2';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { settingsRepository } from '../database/repositories/SettingsRepository.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const logger = createChildLogger('terminal-service');
@@ -15,9 +13,7 @@ export interface CommandResult {
 
 export interface TerminalSession {
   id: string;
-  type: 'ssh' | 'local';
-  connection?: Client;
-  channel?: ClientChannel;
+  type: 'local';
   createdAt: Date;
 }
 
@@ -25,19 +21,12 @@ class TerminalService {
   private sessions = new Map<string, TerminalSession>();
 
   /**
-   * Execute a command - automatically chooses SSH or local based on Hetzner settings
+   * Execute a command locally on the native server
    */
   async executeCommand(command: string, workDir?: string): Promise<CommandResult> {
     try {
-      const hetznerSettings = await settingsRepository.getHetznerSettings();
-
-      if (hetznerSettings && hetznerSettings.host) {
-        logger.info('Executing command via SSH');
-        return await this.executeSSHCommand(command, workDir);
-      } else {
-        logger.info('Executing command locally');
-        return await this.executeLocalCommand(command, workDir);
-      }
+      logger.info({ command, workDir }, 'Executing command locally');
+      return await this.executeLocalCommand(command, workDir);
     } catch (error) {
       logger.error({ error }, 'Failed to execute command');
       return {
@@ -49,110 +38,20 @@ class TerminalService {
   }
 
   /**
-   * Execute command via SSH on production server
-   */
-  private async executeSSHCommand(command: string, workDir?: string): Promise<CommandResult> {
-    const hetznerSettings = await settingsRepository.getHetznerSettings();
-
-    if (!hetznerSettings) {
-      throw new Error('Hetzner SSH settings not configured');
-    }
-
-    return new Promise((resolve) => {
-      const conn = new Client();
-      let output = '';
-      let error = '';
-
-      const timeout = setTimeout(() => {
-        conn.end();
-        resolve({
-          output: output || error,
-          exitCode: 1,
-          error: 'Command timeout after 30 seconds',
-        });
-      }, 30000);
-
-      conn.on('ready', () => {
-        // Add cd command if workDir specified
-        const fullCommand = workDir ? `cd ${workDir} && ${command}` : command;
-
-        conn.exec(fullCommand, (err, stream) => {
-          if (err) {
-            clearTimeout(timeout);
-            conn.end();
-            resolve({
-              output: err.message,
-              exitCode: 1,
-              error: err.message,
-            });
-            return;
-          }
-
-          stream.on('data', (data: Buffer) => {
-            output += data.toString();
-          });
-
-          stream.stderr.on('data', (data: Buffer) => {
-            error += data.toString();
-          });
-
-          stream.on('close', (code: number) => {
-            clearTimeout(timeout);
-            conn.end();
-            resolve({
-              output: output || error,
-              exitCode: code,
-              error: code !== 0 ? error : undefined,
-            });
-          });
-        });
-      });
-
-      conn.on('error', (err) => {
-        clearTimeout(timeout);
-        resolve({
-          output: err.message,
-          exitCode: 1,
-          error: `SSH error: ${err.message}`,
-        });
-      });
-
-      conn.connect({
-        host: hetznerSettings.host,
-        port: hetznerSettings.port || 22,
-        username: hetznerSettings.username,
-        password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-        privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-          ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-          : undefined,
-        readyTimeout: 30000,
-      });
-    });
-  }
-
-  /**
-   * Execute command locally - works on both Windows and Linux
+   * Execute command locally on native Linux server
    */
   private async executeLocalCommand(command: string, workDir?: string): Promise<CommandResult> {
     try {
-      // Detect platform and use appropriate shell
-      const isWindows = process.platform === 'win32';
-      const shell = isWindows ? 'powershell.exe' : '/bin/bash';
-
-      // For Windows, wrap command in PowerShell
-      const shellCommand = isWindows ?
-        `powershell.exe -NoProfile -Command "${command.replace(/"/g, '\\"')}"` :
-        command;
-
       const options = {
         cwd: workDir || process.cwd(),
-        timeout: 30000,
+        timeout: 60000,
         maxBuffer: 10 * 1024 * 1024,
-        shell: shell,
+        shell: '/bin/bash',
         encoding: 'utf8' as BufferEncoding,
+        env: { ...process.env, PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/root/.local/bin' },
       };
 
-      const { stdout, stderr } = await execAsync(shellCommand, options);
+      const { stdout, stderr } = await execAsync(command, options);
 
       return {
         output: stdout || stderr,
@@ -169,62 +68,16 @@ class TerminalService {
   }
 
   /**
-   * Create an interactive SSH session for streaming output
+   * Create a local terminal session
    */
   async createInteractiveSession(sessionId: string): Promise<TerminalSession> {
-    const hetznerSettings = await settingsRepository.getHetznerSettings();
-
-    if (!hetznerSettings || !hetznerSettings.host) {
-      // Create local session
-      const session: TerminalSession = {
-        id: sessionId,
-        type: 'local',
-        createdAt: new Date(),
-      };
-      this.sessions.set(sessionId, session);
-      return session;
-    }
-
-    // Create SSH session
-    return new Promise((resolve, reject) => {
-      const conn = new Client();
-
-      conn.on('ready', () => {
-        conn.shell((err, stream) => {
-          if (err) {
-            conn.end();
-            reject(err);
-            return;
-          }
-
-          const session: TerminalSession = {
-            id: sessionId,
-            type: 'ssh',
-            connection: conn,
-            channel: stream,
-            createdAt: new Date(),
-          };
-
-          this.sessions.set(sessionId, session);
-          resolve(session);
-        });
-      });
-
-      conn.on('error', (err) => {
-        reject(err);
-      });
-
-      conn.connect({
-        host: hetznerSettings.host,
-        port: hetznerSettings.port || 22,
-        username: hetznerSettings.username,
-        password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-        privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-          ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-          : undefined,
-        readyTimeout: 30000,
-      });
-    });
+    const session: TerminalSession = {
+      id: sessionId,
+      type: 'local',
+      createdAt: new Date(),
+    };
+    this.sessions.set(sessionId, session);
+    return session;
   }
 
   /**
@@ -233,12 +86,6 @@ class TerminalService {
   closeSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session) {
-      if (session.channel) {
-        session.channel.end();
-      }
-      if (session.connection) {
-        session.connection.end();
-      }
       this.sessions.delete(sessionId);
       logger.info({ sessionId }, 'Terminal session closed');
     }
