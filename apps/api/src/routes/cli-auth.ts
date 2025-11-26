@@ -65,16 +65,27 @@ export const cliAuthRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // Start Claude Code authentication
-  fastify.post('/api/cli-auth/claude-code/start', async (_request, _reply) => {
+  fastify.post('/api/cli-auth/claude-code/start', async (_request, reply) => {
     try {
       logger.info('Starting Claude Code authentication');
       const session = await cliAuthService.startClaudeCodeAuth();
+
+      // Check if session failed immediately
+      if (session.status === 'failed') {
+        reply.code(503);
+        return {
+          success: false,
+          error: { code: 'AUTH_START_FAILED', message: session.message || 'Failed to start Claude Code authentication' },
+        };
+      }
+
       return {
         success: true,
         data: formatSession(session),
       };
     } catch (error) {
       logger.error({ error }, 'Failed to start Claude Code auth');
+      reply.code(503);
       return {
         success: false,
         error: { code: 'AUTH_START_FAILED', message: 'Failed to start Claude Code authentication' },
@@ -82,35 +93,61 @@ export const cliAuthRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
-  // Start Azure CLI authentication
-  fastify.post('/api/cli-auth/azure-cli/start', async (_request, _reply) => {
+  // Azure auth handler function (shared)
+  const handleAzureAuth = async (reply: any) => {
     try {
       logger.info('Starting Azure CLI authentication');
       const session = await cliAuthService.startAzureAuth();
+
+      // Check if session failed immediately
+      if (session.status === 'failed') {
+        reply.code(503);
+        return {
+          success: false,
+          error: { code: 'AUTH_START_FAILED', message: session.message || 'Failed to start Azure CLI authentication' },
+        };
+      }
+
       return {
         success: true,
         data: formatSession(session),
       };
     } catch (error) {
       logger.error({ error }, 'Failed to start Azure CLI auth');
+      reply.code(503);
       return {
         success: false,
         error: { code: 'AUTH_START_FAILED', message: 'Failed to start Azure CLI authentication' },
       };
     }
-  });
+  };
+
+  // Start Azure CLI authentication (both URL formats for compatibility)
+  fastify.post('/api/cli-auth/azure-cli/start', async (_request, reply) => handleAzureAuth(reply));
+  fastify.post('/api/cli-auth/azure/start', async (_request, reply) => handleAzureAuth(reply));
 
   // Start gcloud authentication (interactive device code)
-  fastify.post('/api/cli-auth/gcloud/start', async (_request, _reply) => {
+  fastify.post('/api/cli-auth/gcloud/start', async (_request, reply) => {
     try {
       logger.info('Starting gcloud authentication');
       const session = await cliAuthService.startGCloudAuth();
+
+      // Check if session failed immediately
+      if (session.status === 'failed') {
+        reply.code(503);
+        return {
+          success: false,
+          error: { code: 'AUTH_START_FAILED', message: session.message || 'Failed to start gcloud authentication' },
+        };
+      }
+
       return {
         success: true,
         data: formatSession(session),
       };
     } catch (error) {
       logger.error({ error }, 'Failed to start gcloud auth');
+      reply.code(503);
       return {
         success: false,
         error: { code: 'AUTH_START_FAILED', message: 'Failed to start gcloud authentication' },

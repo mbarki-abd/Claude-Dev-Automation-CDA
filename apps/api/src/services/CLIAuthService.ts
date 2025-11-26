@@ -1,8 +1,10 @@
 import { EventEmitter } from 'events';
+import { spawn, exec, ChildProcess } from 'child_process';
+import { promisify } from 'util';
 import { createChildLogger } from '../utils/logger.js';
-import { settingsRepository } from '../database/repositories/SettingsRepository.js';
 
 const logger = createChildLogger('cli-auth');
+const execAsync = promisify(exec);
 
 export interface AuthSession {
   id: string;
@@ -14,8 +16,7 @@ export interface AuthSession {
   message?: string;
   createdAt: Date;
   expiresAt?: Date;
-  sshStream?: any;
-  sshConnection?: any;
+  process?: ChildProcess;
 }
 
 export interface AuthProgress {
@@ -35,10 +36,11 @@ export class CLIAuthService extends EventEmitter {
   }
 
   /**
-   * Start Claude Code authentication flow via SSH PTY
+   * Start Claude Code authentication flow (local execution)
    */
   async startClaudeCodeAuth(): Promise<AuthSession> {
     const sessionId = this.generateSessionId();
+
     const session: AuthSession = {
       id: sessionId,
       tool: 'claude-code',
@@ -48,152 +50,111 @@ export class CLIAuthService extends EventEmitter {
     };
     this.sessions.set(sessionId, session);
 
-    logger.info({ sessionId }, 'Starting Claude Code authentication');
+    logger.info({ sessionId }, 'Starting Claude Code authentication (local)');
 
     try {
-      const hetznerSettings = await settingsRepository.getHetznerSettings();
-      if (!hetznerSettings) {
-        session.status = 'failed';
-        session.message = 'Hetzner SSH not configured';
-        this.emitProgress(session);
-        return session;
-      }
+      // Ensure workspace exists
+      await execAsync('mkdir -p /tmp/claude-workspace');
 
-      const { Client } = await import('ssh2');
-      const conn = new Client();
-
-      session.sshConnection = conn;
-
-      return new Promise((resolve) => {
-        let buffer = '';
-        let step = 0;
-        let authUrl: string | null = null;
-
-        const timeout = setTimeout(() => {
-          session.status = 'failed';
-          session.message = 'Authentication timeout (10 minutes)';
-          this.emitProgress(session);
-          conn.end();
-          resolve(session);
-        }, 10 * 60 * 1000);
-
-        conn.on('ready', () => {
-          logger.info({ sessionId }, 'SSH connected, starting Claude auth flow');
-
-          conn.shell({ term: 'xterm-256color', cols: 120, rows: 40 }, (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              session.status = 'failed';
-              session.message = `Shell error: ${err.message}`;
-              this.emitProgress(session);
-              conn.end();
-              resolve(session);
-              return;
-            }
-
-            session.sshStream = stream;
-            session.status = 'pending';
-            this.emitProgress(session);
-
-            stream.on('data', (data: Buffer) => {
-              const str = data.toString();
-              buffer += str;
-
-              // Emit raw output for UI
-              this.emit('output', { sessionId, data: str });
-
-              // Extract OAuth URL
-              const urlMatch = buffer.match(/https:\/\/claude\.ai\/oauth\/authorize[^\s\x1b\x00-\x1f]*/);
-              if (urlMatch && !authUrl) {
-                authUrl = urlMatch[0];
-                session.authUrl = authUrl;
-                session.status = 'waiting_for_code';
-                session.message = 'Open the URL in your browser to authenticate';
-                this.emitProgress(session);
-                logger.info({ sessionId, authUrl }, 'Got Claude auth URL');
-              }
-
-              // Auto-navigate through menus
-              if (buffer.includes('Choose the text style') && step === 0) {
-                step = 1;
-                setTimeout(() => stream.write('\r'), 1000);
-              }
-
-              if ((buffer.includes('Select login method') || buffer.includes('Choose an authentication method')) && step === 1) {
-                step = 2;
-                setTimeout(() => stream.write('\r'), 1500);
-              }
-
-              // Check for success
-              if ((buffer.includes('Logged in') || buffer.includes('successfully authenticated') || buffer.includes('Welcome back')) && step >= 2) {
-                clearTimeout(timeout);
-                session.status = 'success';
-                session.message = 'Claude Code authenticated successfully!';
-                this.emitProgress(session);
-                logger.info({ sessionId }, 'Claude Code authentication successful');
-
-                // Exit gracefully
-                setTimeout(() => {
-                  stream.write('\x03'); // Ctrl+C
-                  setTimeout(() => {
-                    stream.write('exit\n');
-                    conn.end();
-                  }, 500);
-                }, 2000);
-
-                resolve(session);
-              }
-
-              // Check for errors
-              if (buffer.includes('Invalid code') || buffer.includes('expired')) {
-                session.message = 'Invalid or expired code - please try again';
-                this.emitProgress(session);
-              }
-            });
-
-            stream.on('close', () => {
-              clearTimeout(timeout);
-              if (session.status !== 'success') {
-                session.status = 'failed';
-                session.message = session.message || 'Session closed unexpectedly';
-                this.emitProgress(session);
-              }
-              conn.end();
-              resolve(session);
-            });
-
-            // Start Claude
-            setTimeout(() => {
-              stream.write('cd /root/claude-workspace && claude\n');
-            }, 500);
-          });
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          session.status = 'failed';
-          session.message = `SSH error: ${err.message}`;
-          this.emitProgress(session);
-          logger.error({ sessionId, err }, 'SSH connection error');
-          resolve(session);
-        });
-
-        conn.connect({
-          host: hetznerSettings.host,
-          port: hetznerSettings.port || 22,
-          username: hetznerSettings.username,
-          password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-          privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-            ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-            : undefined,
-          readyTimeout: 30000,
-        });
+      const childProcess = spawn('claude', [], {
+        cwd: '/tmp/claude-workspace',
+        shell: true,
+        env: { ...process.env, TERM: 'xterm-256color' },
       });
+
+      session.process = childProcess;
+      let buffer = '';
+      let step = 0;
+
+      const timeout = setTimeout(() => {
+        session.status = 'failed';
+        session.message = 'Authentication timeout (10 minutes)';
+        this.emitProgress(session);
+        childProcess.kill();
+      }, 10 * 60 * 1000);
+
+      childProcess.stdout?.on('data', (data: Buffer) => {
+        const str = data.toString();
+        buffer += str;
+        this.emit('output', { sessionId: session.id, data: str });
+
+        // Extract OAuth URL
+        const urlMatch = buffer.match(/https:\/\/claude\.ai\/oauth\/authorize[^\s\x1b\x00-\x1f]*/);
+        if (urlMatch && !session.authUrl) {
+          session.authUrl = urlMatch[0];
+          session.status = 'waiting_for_code';
+          session.message = 'Open the URL in your browser to authenticate';
+          this.emitProgress(session);
+          logger.info({ sessionId: session.id, authUrl: session.authUrl }, 'Got Claude auth URL');
+        }
+
+        // Auto-navigate through menus
+        if (buffer.includes('Choose the text style') && step === 0) {
+          step = 1;
+          setTimeout(() => childProcess.stdin?.write('\n'), 1000);
+        }
+
+        if ((buffer.includes('Select login method') || buffer.includes('Choose an authentication method')) && step === 1) {
+          step = 2;
+          setTimeout(() => childProcess.stdin?.write('\n'), 1500);
+        }
+
+        // Check for success
+        if ((buffer.includes('Logged in') || buffer.includes('successfully authenticated') || buffer.includes('Welcome back')) && step >= 2) {
+          clearTimeout(timeout);
+          session.status = 'success';
+          session.message = 'Claude Code authenticated successfully!';
+          this.emitProgress(session);
+          logger.info({ sessionId: session.id }, 'Claude Code authentication successful');
+
+          setTimeout(() => {
+            childProcess.stdin?.write('\x03'); // Ctrl+C
+          }, 2000);
+        }
+      });
+
+      childProcess.stderr?.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        this.emit('output', { sessionId: session.id, data: data.toString() });
+      });
+
+      childProcess.on('close', (_code: number) => {
+        clearTimeout(timeout);
+        if (session.status !== 'success') {
+          session.status = 'failed';
+          session.message = session.message || buffer.slice(-500);
+        }
+        this.emitProgress(session);
+      });
+
+      childProcess.on('error', (err: Error) => {
+        clearTimeout(timeout);
+        session.status = 'failed';
+        session.message = `Process error: ${err.message}`;
+        this.emitProgress(session);
+      });
+
+      // Wait for auth URL or timeout
+      await new Promise<void>((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (session.authUrl || session.status === 'failed' || session.status === 'success') {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 500);
+
+        // Max wait 30 seconds for URL
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          resolve();
+        }, 30000);
+      });
+
+      return session;
     } catch (err) {
       session.status = 'failed';
       session.message = `Error: ${(err as Error).message}`;
       this.emitProgress(session);
-      logger.error({ sessionId, err }, 'Failed to start Claude auth');
       return session;
     }
   }
@@ -211,8 +172,8 @@ export class CLIAuthService extends EventEmitter {
       return { success: false, message: `Cannot submit code in status: ${session.status}` };
     }
 
-    if (!session.sshStream) {
-      return { success: false, message: 'SSH stream not available' };
+    if (!session.process?.stdin) {
+      return { success: false, message: 'Process stream not available' };
     }
 
     logger.info({ sessionId, codeLength: code.length }, 'Submitting auth code');
@@ -220,17 +181,18 @@ export class CLIAuthService extends EventEmitter {
     session.message = 'Submitting code...';
     this.emitProgress(session);
 
-    // Send the code to the Claude CLI
-    session.sshStream.write(code.trim() + '\r');
+    // Send the code to the Claude CLI process
+    session.process.stdin.write(code.trim() + '\n');
 
     return { success: true, message: 'Code submitted, waiting for authentication...' };
   }
 
   /**
-   * Start Azure CLI device code flow
+   * Start Azure CLI device code flow (local execution)
    */
   async startAzureAuth(): Promise<AuthSession> {
     const sessionId = this.generateSessionId();
+
     const session: AuthSession = {
       id: sessionId,
       tool: 'azure-cli',
@@ -240,113 +202,89 @@ export class CLIAuthService extends EventEmitter {
     };
     this.sessions.set(sessionId, session);
 
-    logger.info({ sessionId }, 'Starting Azure CLI device code authentication');
+    logger.info({ sessionId }, 'Starting Azure CLI device code authentication (local)');
 
     try {
-      const hetznerSettings = await settingsRepository.getHetznerSettings();
-      const azureSettings = await settingsRepository.getAzureSettings();
-
-      if (!hetznerSettings) {
-        session.status = 'failed';
-        session.message = 'Hetzner SSH not configured';
-        this.emitProgress(session);
-        return session;
-      }
-
-      const { Client } = await import('ssh2');
-      const conn = new Client();
-
-      return new Promise((resolve) => {
-        let buffer = '';
-
-        const timeout = setTimeout(() => {
-          session.status = 'failed';
-          session.message = 'Authentication timeout';
-          this.emitProgress(session);
-          conn.end();
-          resolve(session);
-        }, 15 * 60 * 1000);
-
-        conn.on('ready', () => {
-          // Use device code flow for interactive login
-          const tenantArg = azureSettings?.tenantId ? ` --tenant ${azureSettings.tenantId}` : '';
-          const command = `az login --use-device-code${tenantArg} 2>&1`;
-
-          conn.exec(command, (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              session.status = 'failed';
-              session.message = `Exec error: ${err.message}`;
-              this.emitProgress(session);
-              conn.end();
-              resolve(session);
-              return;
-            }
-
-            stream.on('data', (data: Buffer) => {
-              const str = data.toString();
-              buffer += str;
-              this.emit('output', { sessionId, data: str });
-
-              // Look for device code URL and code
-              const codeMatch = buffer.match(/enter the code\s+([A-Z0-9]+)\s+/i);
-              const urlMatch = buffer.match(/https:\/\/microsoft\.com\/devicelogin/i);
-
-              if (urlMatch && codeMatch && !session.authUrl) {
-                session.authUrl = 'https://microsoft.com/devicelogin';
-                session.userCode = codeMatch[1];
-                session.status = 'waiting_for_code';
-                session.message = `Enter code ${codeMatch[1]} at ${session.authUrl}`;
-                this.emitProgress(session);
-                logger.info({ sessionId, userCode: codeMatch[1] }, 'Got Azure device code');
-              }
-
-              // Check for success
-              if (buffer.includes('"cloudName"') || buffer.includes('Successfully logged')) {
-                clearTimeout(timeout);
-                session.status = 'success';
-                session.message = 'Azure CLI authenticated successfully!';
-                this.emitProgress(session);
-                logger.info({ sessionId }, 'Azure CLI authentication successful');
-              }
-            });
-
-            stream.stderr.on('data', (data: Buffer) => {
-              buffer += data.toString();
-            });
-
-            stream.on('close', (code: number) => {
-              clearTimeout(timeout);
-              if (session.status !== 'success') {
-                session.status = code === 0 ? 'success' : 'failed';
-                session.message = code === 0 ? 'Azure CLI authenticated!' : buffer.slice(-500);
-              }
-              this.emitProgress(session);
-              conn.end();
-              resolve(session);
-            });
-          });
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          session.status = 'failed';
-          session.message = `SSH error: ${err.message}`;
-          this.emitProgress(session);
-          resolve(session);
-        });
-
-        conn.connect({
-          host: hetznerSettings.host,
-          port: hetznerSettings.port || 22,
-          username: hetznerSettings.username,
-          password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-          privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-            ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-            : undefined,
-          readyTimeout: 30000,
-        });
+      const childProcess = spawn('az', ['login', '--use-device-code'], {
+        shell: true,
+        env: process.env,
       });
+
+      session.process = childProcess;
+      let buffer = '';
+
+      const timeout = setTimeout(() => {
+        session.status = 'failed';
+        session.message = 'Authentication timeout';
+        this.emitProgress(session);
+        childProcess.kill();
+      }, 15 * 60 * 1000);
+
+      childProcess.stdout?.on('data', (data: Buffer) => {
+        const str = data.toString();
+        buffer += str;
+        this.emit('output', { sessionId: session.id, data: str });
+
+        // Look for device code URL and code
+        const codeMatch = buffer.match(/enter the code\s+([A-Z0-9]+)\s+/i);
+        const urlMatch = buffer.match(/https:\/\/microsoft\.com\/devicelogin/i);
+
+        if (urlMatch && codeMatch && !session.authUrl) {
+          session.authUrl = 'https://microsoft.com/devicelogin';
+          session.userCode = codeMatch[1];
+          session.status = 'waiting_for_code';
+          session.message = `Enter code ${codeMatch[1]} at ${session.authUrl}`;
+          this.emitProgress(session);
+          logger.info({ sessionId: session.id, userCode: codeMatch[1] }, 'Got Azure device code');
+        }
+
+        // Check for success
+        if (buffer.includes('"cloudName"') || buffer.includes('Successfully logged')) {
+          clearTimeout(timeout);
+          session.status = 'success';
+          session.message = 'Azure CLI authenticated successfully!';
+          this.emitProgress(session);
+          logger.info({ sessionId: session.id }, 'Azure CLI authentication successful');
+        }
+      });
+
+      childProcess.stderr?.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        this.emit('output', { sessionId: session.id, data: data.toString() });
+      });
+
+      childProcess.on('close', (code: number) => {
+        clearTimeout(timeout);
+        if (session.status !== 'success') {
+          session.status = code === 0 ? 'success' : 'failed';
+          session.message = code === 0 ? 'Azure CLI authenticated!' : buffer.slice(-500);
+        }
+        this.emitProgress(session);
+      });
+
+      childProcess.on('error', (err: Error) => {
+        clearTimeout(timeout);
+        session.status = 'failed';
+        session.message = `Process error: ${err.message}`;
+        this.emitProgress(session);
+      });
+
+      // Wait for device code or timeout
+      await new Promise<void>((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (session.userCode || session.status === 'failed' || session.status === 'success') {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 500);
+
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          resolve();
+        }, 30000);
+      });
+
+      return session;
     } catch (err) {
       session.status = 'failed';
       session.message = `Error: ${(err as Error).message}`;
@@ -356,10 +294,11 @@ export class CLIAuthService extends EventEmitter {
   }
 
   /**
-   * Start Google Cloud SDK device code flow
+   * Start Google Cloud SDK device code flow (local execution)
    */
   async startGCloudAuth(): Promise<AuthSession> {
     const sessionId = this.generateSessionId();
+
     const session: AuthSession = {
       id: sessionId,
       tool: 'gcloud',
@@ -369,110 +308,86 @@ export class CLIAuthService extends EventEmitter {
     };
     this.sessions.set(sessionId, session);
 
-    logger.info({ sessionId }, 'Starting gcloud authentication');
+    logger.info({ sessionId }, 'Starting gcloud authentication (local)');
 
     try {
-      const hetznerSettings = await settingsRepository.getHetznerSettings();
-      const gcloudSettings = await settingsRepository.getGCloudSettings();
-
-      if (!hetznerSettings) {
-        session.status = 'failed';
-        session.message = 'Hetzner SSH not configured';
-        this.emitProgress(session);
-        return session;
-      }
-
-      const { Client } = await import('ssh2');
-      const conn = new Client();
-
-      return new Promise((resolve) => {
-        let buffer = '';
-
-        const timeout = setTimeout(() => {
-          session.status = 'failed';
-          session.message = 'Authentication timeout';
-          this.emitProgress(session);
-          conn.end();
-          resolve(session);
-        }, 10 * 60 * 1000);
-
-        conn.on('ready', () => {
-          // Use gcloud auth login with no-browser flag for headless auth
-          const projectArg = gcloudSettings?.projectId ? ` && gcloud config set project ${gcloudSettings.projectId}` : '';
-          const command = `gcloud auth login --no-browser 2>&1${projectArg}`;
-
-          conn.exec(command, (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              session.status = 'failed';
-              session.message = `Exec error: ${err.message}`;
-              this.emitProgress(session);
-              conn.end();
-              resolve(session);
-              return;
-            }
-
-            stream.on('data', (data: Buffer) => {
-              const str = data.toString();
-              buffer += str;
-              this.emit('output', { sessionId, data: str });
-
-              // Look for auth URL
-              const urlMatch = buffer.match(/https:\/\/accounts\.google\.com\/o\/oauth2[^\s]*/);
-              if (urlMatch && !session.authUrl) {
-                session.authUrl = urlMatch[0];
-                session.status = 'waiting_for_code';
-                session.message = 'Open the URL in your browser and paste the code back';
-                this.emitProgress(session);
-                logger.info({ sessionId, authUrl: session.authUrl }, 'Got gcloud auth URL');
-              }
-
-              // Check for success
-              if (buffer.includes('You are now logged in') || buffer.includes('You are now authenticated')) {
-                clearTimeout(timeout);
-                session.status = 'success';
-                session.message = 'gcloud authenticated successfully!';
-                this.emitProgress(session);
-                logger.info({ sessionId }, 'gcloud authentication successful');
-              }
-            });
-
-            stream.stderr.on('data', (data: Buffer) => {
-              buffer += data.toString();
-            });
-
-            stream.on('close', (code: number) => {
-              clearTimeout(timeout);
-              if (session.status !== 'success') {
-                session.status = code === 0 ? 'success' : 'failed';
-                session.message = code === 0 ? 'gcloud authenticated!' : buffer.slice(-500);
-              }
-              this.emitProgress(session);
-              conn.end();
-              resolve(session);
-            });
-          });
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          session.status = 'failed';
-          session.message = `SSH error: ${err.message}`;
-          this.emitProgress(session);
-          resolve(session);
-        });
-
-        conn.connect({
-          host: hetznerSettings.host,
-          port: hetznerSettings.port || 22,
-          username: hetznerSettings.username,
-          password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-          privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-            ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-            : undefined,
-          readyTimeout: 30000,
-        });
+      const childProcess = spawn('gcloud', ['auth', 'login', '--no-browser'], {
+        shell: true,
+        env: process.env,
       });
+
+      session.process = childProcess;
+      let buffer = '';
+
+      const timeout = setTimeout(() => {
+        session.status = 'failed';
+        session.message = 'Authentication timeout';
+        this.emitProgress(session);
+        childProcess.kill();
+      }, 10 * 60 * 1000);
+
+      childProcess.stdout?.on('data', (data: Buffer) => {
+        const str = data.toString();
+        buffer += str;
+        this.emit('output', { sessionId: session.id, data: str });
+
+        // Look for auth URL
+        const urlMatch = buffer.match(/https:\/\/accounts\.google\.com\/o\/oauth2[^\s]*/);
+        if (urlMatch && !session.authUrl) {
+          session.authUrl = urlMatch[0];
+          session.status = 'waiting_for_code';
+          session.message = 'Open the URL in your browser and paste the code back';
+          this.emitProgress(session);
+          logger.info({ sessionId: session.id, authUrl: session.authUrl }, 'Got gcloud auth URL');
+        }
+
+        // Check for success
+        if (buffer.includes('You are now logged in') || buffer.includes('You are now authenticated')) {
+          clearTimeout(timeout);
+          session.status = 'success';
+          session.message = 'gcloud authenticated successfully!';
+          this.emitProgress(session);
+          logger.info({ sessionId: session.id }, 'gcloud authentication successful');
+        }
+      });
+
+      childProcess.stderr?.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        this.emit('output', { sessionId: session.id, data: data.toString() });
+      });
+
+      childProcess.on('close', (code: number) => {
+        clearTimeout(timeout);
+        if (session.status !== 'success') {
+          session.status = code === 0 ? 'success' : 'failed';
+          session.message = code === 0 ? 'gcloud authenticated!' : buffer.slice(-500);
+        }
+        this.emitProgress(session);
+      });
+
+      childProcess.on('error', (err: Error) => {
+        clearTimeout(timeout);
+        session.status = 'failed';
+        session.message = `Process error: ${err.message}`;
+        this.emitProgress(session);
+      });
+
+      // Wait for auth URL or timeout
+      await new Promise<void>((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (session.authUrl || session.status === 'failed' || session.status === 'success') {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 500);
+
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          resolve();
+        }, 30000);
+      });
+
+      return session;
     } catch (err) {
       session.status = 'failed';
       session.message = `Error: ${(err as Error).message}`;
@@ -505,20 +420,12 @@ export class CLIAuthService extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
-    if (session.sshStream) {
+    if (session.process) {
       try {
-        session.sshStream.write('\x03'); // Ctrl+C
+        session.process.stdin?.write('\x03'); // Ctrl+C
         setTimeout(() => {
-          session.sshStream?.write('exit\n');
+          session.process?.kill();
         }, 500);
-      } catch {
-        // Ignore errors during cleanup
-      }
-    }
-
-    if (session.sshConnection) {
-      try {
-        session.sshConnection.end();
       } catch {
         // Ignore errors during cleanup
       }
@@ -533,109 +440,40 @@ export class CLIAuthService extends EventEmitter {
   }
 
   /**
-   * Check auth status for all CLI tools
+   * Check auth status for all CLI tools (local execution)
    */
   async checkAllAuthStatus(): Promise<Record<string, { authenticated: boolean; details?: string }>> {
-    const hetznerSettings = await settingsRepository.getHetznerSettings();
-    if (!hetznerSettings) {
-      return {
-        'claude-code': { authenticated: false, details: 'SSH not configured' },
-        'azure-cli': { authenticated: false, details: 'SSH not configured' },
-        'gcloud': { authenticated: false, details: 'SSH not configured' },
-      };
+    const results: Record<string, { authenticated: boolean; details?: string }> = {
+      'claude-code': { authenticated: false },
+      'azure-cli': { authenticated: false },
+      'gcloud': { authenticated: false },
+    };
+
+    // Check Claude Code
+    try {
+      const { stdout } = await execAsync('cat ~/.config/claude/config.json 2>/dev/null || cat /root/.config/claude/config.json 2>/dev/null', { timeout: 5000 });
+      results['claude-code'] = { authenticated: stdout.length > 10, details: 'Config found' };
+    } catch {
+      results['claude-code'] = { authenticated: false, details: 'Not configured' };
     }
 
-    const { Client } = await import('ssh2');
+    // Check Azure CLI
+    try {
+      const { stdout } = await execAsync('az account show --query name -o tsv 2>/dev/null', { timeout: 10000 });
+      results['azure-cli'] = { authenticated: stdout.trim().length > 0, details: stdout.trim() || undefined };
+    } catch {
+      results['azure-cli'] = { authenticated: false, details: 'Not logged in' };
+    }
 
-    return new Promise((resolve) => {
-      const conn = new Client();
-      const results: Record<string, { authenticated: boolean; details?: string }> = {};
+    // Check gcloud
+    try {
+      const { stdout } = await execAsync('gcloud auth list --filter="status=ACTIVE" --format="value(account)" 2>/dev/null | head -1', { timeout: 10000 });
+      results['gcloud'] = { authenticated: stdout.trim().length > 0, details: stdout.trim() || undefined };
+    } catch {
+      results['gcloud'] = { authenticated: false, details: 'Not logged in' };
+    }
 
-      const timeout = setTimeout(() => {
-        conn.end();
-        resolve({
-          'claude-code': { authenticated: false, details: 'Timeout' },
-          'azure-cli': { authenticated: false, details: 'Timeout' },
-          'gcloud': { authenticated: false, details: 'Timeout' },
-        });
-      }, 30000);
-
-      conn.on('ready', () => {
-        const checkCommand = `
-echo "=== AUTH CHECK ==="
-echo "CLAUDE:"
-cat ~/.config/claude/config.json 2>/dev/null && echo "AUTHENTICATED" || echo "NOT_AUTHENTICATED"
-echo "AZURE:"
-az account show 2>/dev/null && echo "AUTHENTICATED" || echo "NOT_AUTHENTICATED"
-echo "GCLOUD:"
-gcloud auth list --filter="status=ACTIVE" --format="value(account)" 2>/dev/null | head -1 || echo "NOT_AUTHENTICATED"
-echo "=== END ==="
-`;
-
-        conn.exec(checkCommand, (err, stream) => {
-          if (err) {
-            clearTimeout(timeout);
-            conn.end();
-            resolve({
-              'claude-code': { authenticated: false, details: err.message },
-              'azure-cli': { authenticated: false, details: err.message },
-              'gcloud': { authenticated: false, details: err.message },
-            });
-            return;
-          }
-
-          let output = '';
-          stream.on('data', (data: Buffer) => {
-            output += data.toString();
-          });
-          stream.stderr.on('data', (data: Buffer) => {
-            output += data.toString();
-          });
-          stream.on('close', () => {
-            clearTimeout(timeout);
-            conn.end();
-
-            // Parse results
-            const claudeAuth = output.includes('CLAUDE:') &&
-              (output.split('CLAUDE:')[1]?.includes('AUTHENTICATED') &&
-               !output.split('CLAUDE:')[1]?.split('AZURE:')[0]?.includes('NOT_AUTHENTICATED'));
-
-            const azureAuth = output.includes('AZURE:') &&
-              (output.split('AZURE:')[1]?.includes('AUTHENTICATED') &&
-               !output.split('AZURE:')[1]?.split('GCLOUD:')[0]?.includes('NOT_AUTHENTICATED'));
-
-            const gcloudSection = output.split('GCLOUD:')[1]?.split('===')[0] || '';
-            const gcloudAuth = gcloudSection.trim().length > 0 && !gcloudSection.includes('NOT_AUTHENTICATED');
-
-            results['claude-code'] = { authenticated: claudeAuth };
-            results['azure-cli'] = { authenticated: azureAuth };
-            results['gcloud'] = { authenticated: gcloudAuth, details: gcloudAuth ? gcloudSection.trim() : undefined };
-
-            resolve(results);
-          });
-        });
-      });
-
-      conn.on('error', (err) => {
-        clearTimeout(timeout);
-        resolve({
-          'claude-code': { authenticated: false, details: err.message },
-          'azure-cli': { authenticated: false, details: err.message },
-          'gcloud': { authenticated: false, details: err.message },
-        });
-      });
-
-      conn.connect({
-        host: hetznerSettings.host,
-        port: hetznerSettings.port || 22,
-        username: hetznerSettings.username,
-        password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-        privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-          ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-          : undefined,
-        readyTimeout: 10000,
-      });
-    });
+    return results;
   }
 
   private generateSessionId(): string {

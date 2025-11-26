@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { CheckCircle, XCircle, Loader2, RefreshCw, Play, Cloud, Github, Server, HardDrive, Terminal, Package, Download, Key, ArrowRight } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+// Use empty string for relative URLs - nginx proxies /api to the backend
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 interface SettingValue {
   [key: string]: unknown;

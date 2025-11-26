@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { CheckCircle, XCircle, Loader2, ExternalLink, Copy, Cloud, Terminal, Key, RefreshCw, Package, Download, Server } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+// Use empty string for relative URLs - nginx proxies /api to the backend
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 interface AuthStatus {
   authenticated: boolean;

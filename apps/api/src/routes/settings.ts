@@ -1,8 +1,220 @@
 import { FastifyPluginAsync } from 'fastify';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { settingsRepository, SETTINGS_KEYS } from '../database/repositories/SettingsRepository.js';
 import { createChildLogger } from '../utils/logger.js';
+import { hostname, freemem, totalmem } from 'os';
 
 const logger = createChildLogger('settings-routes');
+const execAsync = promisify(exec);
+
+/**
+ * Check installed tools locally (native execution)
+ */
+async function checkToolsLocal(): Promise<{ success: boolean; data: Record<string, unknown> }> {
+  const tools: Record<string, { installed: boolean; version: string }> = {};
+
+  const toolChecks = [
+    { name: 'node', cmd: 'node --version' },
+    { name: 'npm', cmd: 'npm --version' },
+    { name: 'docker', cmd: 'docker --version' },
+    { name: 'claude', cmd: 'claude --version' },
+    { name: 'azure_cli', cmd: 'az --version 2>&1 | head -1' },
+    { name: 'git', cmd: 'git --version' },
+    { name: 'python', cmd: 'python3 --version' },
+    { name: 'gcloud', cmd: 'gcloud --version 2>&1 | head -1' },
+  ];
+
+  for (const { name, cmd } of toolChecks) {
+    try {
+      const { stdout } = await execAsync(cmd, { timeout: 10000 });
+      tools[name] = { installed: true, version: stdout.trim().split('\n')[0] };
+    } catch {
+      tools[name] = { installed: false, version: 'Not installed' };
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      host: hostname(),
+      mode: 'local',
+      tools,
+      checkedAt: new Date().toISOString()
+    }
+  };
+}
+
+/**
+ * Get local server status (native execution)
+ */
+async function getServerStatus(): Promise<{ success: boolean; data: Record<string, unknown> }> {
+  const containers: Array<{ name: string; status: string }> = [];
+  let diskUsage = 'unknown';
+  const memUsed = Math.round((totalmem() - freemem()) / 1024 / 1024);
+  const memTotal = Math.round(totalmem() / 1024 / 1024);
+  const memoryUsage = `${memUsed}/${memTotal} MB`;
+
+  // Get Docker containers
+  try {
+    const { stdout } = await execAsync("docker ps --format '{{.Names}}:{{.Status}}'", { timeout: 10000 });
+    const lines = stdout.trim().split('\n').filter(l => l.includes(':'));
+    for (const line of lines) {
+      const [name, status] = line.split(':');
+      if (name && status) {
+        containers.push({ name: name.trim(), status: status.trim() });
+      }
+    }
+  } catch {
+    // Docker may not be running
+  }
+
+  // Get disk usage
+  try {
+    const { stdout } = await execAsync("df -h / | tail -1 | awk '{print $5}'", { timeout: 5000 });
+    diskUsage = stdout.trim();
+  } catch {
+    // Fallback for Windows
+    try {
+      const { stdout } = await execAsync("wmic logicaldisk get size,freespace,caption", { timeout: 5000 });
+      diskUsage = stdout.trim().split('\n')[1] || 'unknown';
+    } catch {
+      // Ignore
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      configured: true,
+      connected: true,
+      host: hostname(),
+      mode: 'local',
+      containers,
+      diskUsage,
+      memoryUsage
+    }
+  };
+}
+
+/**
+ * Execute command locally (native execution)
+ */
+async function executeCommandLocal(command: string): Promise<{ success: boolean; data?: Record<string, unknown>; error?: { message: string } }> {
+  try {
+    const { stdout, stderr } = await execAsync(command, { timeout: 60000 });
+    return {
+      success: true,
+      data: { output: stdout, stderr, exitCode: 0 }
+    };
+  } catch (err: unknown) {
+    const error = err as { stdout?: string; stderr?: string; code?: number; message?: string };
+    return {
+      success: false,
+      error: { message: error.stderr || error.message || 'Command execution failed' }
+    };
+  }
+}
+
+/**
+ * Install tool locally (native execution)
+ */
+async function installToolLocal(tool: string): Promise<{ success: boolean; data?: Record<string, unknown>; error?: { message: string; details?: string } }> {
+  const installCommands: Record<string, string> = {
+    claude: 'npm install -g @anthropic-ai/claude-code',
+    'azure-cli': 'curl -sL https://aka.ms/InstallAzureCLIDeb | bash',
+    node: 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs',
+    docker: 'curl -fsSL https://get.docker.com | bash',
+    git: 'apt-get update && apt-get install -y git',
+    python: 'apt-get update && apt-get install -y python3 python3-pip',
+    gcloud: 'curl https://sdk.cloud.google.com | bash'
+  };
+
+  const command = installCommands[tool];
+  if (!command) {
+    return { success: false, error: { message: `Unknown tool: ${tool}. Available: ${Object.keys(installCommands).join(', ')}` } };
+  }
+
+  try {
+    const { stdout, stderr } = await execAsync(command, { timeout: 300000 });
+    return {
+      success: true,
+      data: {
+        tool,
+        installed: true,
+        output: (stdout || stderr).slice(-1000)
+      }
+    };
+  } catch (err: unknown) {
+    const error = err as { stdout?: string; stderr?: string; code?: number; message?: string };
+    return {
+      success: false,
+      error: {
+        message: `Installation failed: ${error.message}`,
+        details: (error.stderr || error.stdout || '').slice(-1000)
+      }
+    };
+  }
+}
+
+/**
+ * Check Claude Code authentication status locally
+ */
+async function checkClaudeAuthLocal(): Promise<{ success: boolean; data?: Record<string, unknown>; error?: { message: string } }> {
+  let isInstalled = false;
+  let isConfigured = false;
+  let output = '';
+
+  // Check if Claude is installed
+  try {
+    const { stdout } = await execAsync('claude --version', { timeout: 5000 });
+    isInstalled = true;
+    output += stdout;
+  } catch {
+    output = 'Claude Code is not installed';
+  }
+
+  // Check if Claude is configured
+  if (isInstalled) {
+    try {
+      const { stdout } = await execAsync('cat ~/.config/claude/config.json 2>/dev/null || cat /root/.config/claude/config.json 2>/dev/null', { timeout: 5000 });
+      isConfigured = stdout.length > 10;
+      if (isConfigured) {
+        output += '\nConfig found';
+      }
+    } catch {
+      isConfigured = false;
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      installed: isInstalled,
+      configured: isConfigured,
+      output: output.slice(0, 500),
+      instructions: isInstalled && !isConfigured
+        ? 'Run "claude" in the terminal to authenticate via browser'
+        : isInstalled && isConfigured
+        ? 'Claude Code is configured and ready'
+        : 'Claude Code is not installed. Install with: npm install -g @anthropic-ai/claude-code'
+    }
+  };
+}
+
+/**
+ * Azure CLI login using service principal (local execution)
+ */
+async function azureCliLogin(clientId: string, clientSecret: string, tenantId: string): Promise<{ success: boolean; data?: Record<string, unknown>; error?: { message: string } }> {
+  try {
+    const loginCommand = `az login --service-principal -u "${clientId}" -p "${clientSecret}" --tenant "${tenantId}"`;
+    const { stdout } = await execAsync(loginCommand, { timeout: 60000 });
+    return { success: true, data: { status: 'logged_in', output: stdout.slice(0, 500) } };
+  } catch (err: unknown) {
+    const error = err as { stderr?: string; message?: string };
+    return { success: false, error: { message: error.stderr || error.message || 'Azure CLI login failed' } };
+  }
+}
 
 export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   // Get all settings
@@ -180,291 +392,66 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
-  // Test Hetzner SSH connection
+  // Test server connection (local mode - always connected since running locally)
   fastify.post('/api/settings/test/hetzner', async (_request, _reply) => {
     try {
-      const settings = await settingsRepository.getHetznerSettings();
-
-      if (!settings) {
-        return { success: false, error: { message: 'Hetzner not configured' } };
+      // In local mode, we check local system status instead of SSH
+      let dockerInfo = 'Not installed';
+      try {
+        const { stdout } = await execAsync('docker --version', { timeout: 5000 });
+        dockerInfo = stdout.trim();
+      } catch {
+        // Docker not installed
       }
 
-      // Use ssh2 library for SSH connection test
-      const { Client } = await import('ssh2');
-
-      return new Promise((resolve) => {
-        const conn = new Client();
-        let resolved = false;
-
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            conn.end();
-            resolve({ success: false, error: { message: 'Connection timeout' } });
-          }
-        }, 15000);
-
-        conn.on('ready', () => {
-          conn.exec('echo connected && hostname && docker --version 2>/dev/null || echo "Docker not installed"', (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-              resolve({ success: false, error: { message: err.message } });
-              return;
-            }
-
-            let output = '';
-            stream.on('data', (data: Buffer) => {
-              output += data.toString();
-            });
-            stream.stderr.on('data', (data: Buffer) => {
-              output += data.toString();
-            });
-            stream.on('close', () => {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-              const lines = output.trim().split('\n');
-              const hostname = lines[1] || 'unknown';
-              const dockerInfo = lines.slice(2).join(' ') || 'unknown';
-              resolve({
-                success: true,
-                data: {
-                  status: 'connected',
-                  hostname,
-                  docker: dockerInfo,
-                  host: settings.host
-                }
-              });
-            });
-          });
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          if (!resolved) {
-            resolved = true;
-            logger.error({ err }, 'SSH connection error');
-            resolve({ success: false, error: { message: err.message } });
-          }
-        });
-
-        conn.connect({
-          host: settings.host,
-          port: settings.port || 22,
-          username: settings.username,
-          password: settings.authMethod === 'password' ? settings.password : undefined,
-          privateKey: settings.authMethod === 'ssh-key' && settings.sshKeyPath
-            ? require('fs').readFileSync(settings.sshKeyPath)
-            : undefined,
-          readyTimeout: 10000
-        });
-      });
+      return {
+        success: true,
+        data: {
+          status: 'connected',
+          hostname: hostname(),
+          docker: dockerInfo,
+          host: 'localhost',
+          mode: 'local'
+        }
+      };
     } catch (err) {
-      logger.error({ err }, 'Hetzner connection test failed');
+      logger.error({ err }, 'Server connection test failed');
       return { success: false, error: { message: 'Connection test failed' } };
     }
   });
 
-  // Get Hetzner server status
+  // Get server status (local mode)
   fastify.get('/api/settings/hetzner/status', async (_request, _reply) => {
     try {
-      const settings = await settingsRepository.getHetznerSettings();
-
-      if (!settings) {
-        return { success: true, data: { configured: false } };
-      }
-
-      const { Client } = await import('ssh2');
-
-      return new Promise((resolve) => {
-        const conn = new Client();
-        let resolved = false;
-
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            conn.end();
-            resolve({
-              success: true,
-              data: { configured: true, connected: false, host: settings.host }
-            });
-          }
-        }, 10000);
-
-        conn.on('ready', () => {
-          conn.exec("docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null; df -h / | tail -1 | awk '{print $5}'; free -m | grep Mem | awk '{print $3\"/\"$2}'", (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-              resolve({
-                success: true,
-                data: { configured: true, connected: false, host: settings.host, error: err.message }
-              });
-              return;
-            }
-
-            let output = '';
-            stream.on('data', (data: Buffer) => {
-              output += data.toString();
-            });
-            stream.on('close', () => {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-
-              const lines = output.trim().split('\n');
-              const containers: Array<{ name: string; status: string }> = [];
-              let diskUsage = 'unknown';
-              let memoryUsage = 'unknown';
-
-              for (const line of lines) {
-                if (line.includes(':') && !line.includes('%') && !line.includes('/')) {
-                  const [name, status] = line.split(':');
-                  if (name && status) {
-                    containers.push({ name, status });
-                  }
-                } else if (line.includes('%')) {
-                  diskUsage = line;
-                } else if (line.includes('/') && !line.includes(':')) {
-                  memoryUsage = line + ' MB';
-                }
-              }
-
-              resolve({
-                success: true,
-                data: {
-                  configured: true,
-                  connected: true,
-                  host: settings.host,
-                  containers,
-                  diskUsage,
-                  memoryUsage
-                }
-              });
-            });
-          });
-        });
-
-        conn.on('error', () => {
-          clearTimeout(timeout);
-          if (!resolved) {
-            resolved = true;
-            resolve({
-              success: true,
-              data: { configured: true, connected: false, host: settings.host }
-            });
-          }
-        });
-
-        conn.connect({
-          host: settings.host,
-          port: settings.port || 22,
-          username: settings.username,
-          password: settings.authMethod === 'password' ? settings.password : undefined,
-          privateKey: settings.authMethod === 'ssh-key' && settings.sshKeyPath
-            ? require('fs').readFileSync(settings.sshKeyPath)
-            : undefined,
-          readyTimeout: 5000
-        });
-      });
+      // Use local server status check
+      return await getServerStatus();
     } catch (err) {
-      logger.error({ err }, 'Failed to get Hetzner status');
+      logger.error({ err }, 'Failed to get server status');
       return { success: false, error: { message: 'Failed to get server status' } };
     }
   });
 
-  // Execute command on Hetzner server
+  // Execute command locally
   fastify.post('/api/settings/hetzner/exec', async (request, _reply) => {
     try {
-      const settings = await settingsRepository.getHetznerSettings();
       const { command } = request.body as { command: string };
-
-      if (!settings) {
-        return { success: false, error: { message: 'Hetzner not configured' } };
-      }
 
       if (!command) {
         return { success: false, error: { message: 'Command is required' } };
       }
 
-      const { Client } = await import('ssh2');
-
-      return new Promise((resolve) => {
-        const conn = new Client();
-        let resolved = false;
-
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            conn.end();
-            resolve({ success: false, error: { message: 'Command timeout' } });
-          }
-        }, 60000);
-
-        conn.on('ready', () => {
-          conn.exec(command, (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-              resolve({ success: false, error: { message: err.message } });
-              return;
-            }
-
-            let stdout = '';
-            let stderr = '';
-
-            stream.on('data', (data: Buffer) => {
-              stdout += data.toString();
-            });
-            stream.stderr.on('data', (data: Buffer) => {
-              stderr += data.toString();
-            });
-            stream.on('close', (code: number) => {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-              resolve({
-                success: true,
-                data: { output: stdout, stderr, exitCode: code || 0 }
-              });
-            });
-          });
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          if (!resolved) {
-            resolved = true;
-            resolve({ success: false, error: { message: err.message } });
-          }
-        });
-
-        conn.connect({
-          host: settings.host,
-          port: settings.port || 22,
-          username: settings.username,
-          password: settings.authMethod === 'password' ? settings.password : undefined,
-          privateKey: settings.authMethod === 'ssh-key' && settings.sshKeyPath
-            ? require('fs').readFileSync(settings.sshKeyPath)
-            : undefined,
-          readyTimeout: 10000
-        });
-      });
+      // Execute command locally
+      return await executeCommandLocal(command);
     } catch (err) {
-      logger.error({ err }, 'Hetzner exec failed');
+      logger.error({ err }, 'Command execution failed');
       return { success: false, error: { message: 'Command execution failed' } };
     }
   });
 
-  // Azure CLI login using service principal
+  // Azure CLI login using service principal (local execution)
   fastify.post('/api/settings/azure/cli-login', async (_request, _reply) => {
     try {
       const settings = await settingsRepository.getAzureSettings();
-      const hetznerSettings = await settingsRepository.getHetznerSettings();
 
       if (!settings) {
         return { success: false, error: { message: 'Azure not configured' } };
@@ -474,400 +461,47 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
         return { success: false, error: { message: 'Azure credentials incomplete (need tenantId, clientId, clientSecret)' } };
       }
 
-      // Execute az login via SSH on remote server
-      if (hetznerSettings) {
-        const { Client } = await import('ssh2');
-
-        return new Promise((resolve) => {
-          const conn = new Client();
-          let resolved = false;
-
-          const timeout = setTimeout(() => {
-            if (!resolved) {
-              resolved = true;
-              conn.end();
-              resolve({ success: false, error: { message: 'Azure login timeout' } });
-            }
-          }, 60000);
-
-          conn.on('ready', () => {
-            const loginCommand = `az login --service-principal -u "${settings.clientId}" -p "${settings.clientSecret}" --tenant "${settings.tenantId}" 2>&1`;
-            conn.exec(loginCommand, (err, stream) => {
-              if (err) {
-                clearTimeout(timeout);
-                resolved = true;
-                conn.end();
-                resolve({ success: false, error: { message: err.message } });
-                return;
-              }
-
-              let output = '';
-              stream.on('data', (data: Buffer) => {
-                output += data.toString();
-              });
-              stream.stderr.on('data', (data: Buffer) => {
-                output += data.toString();
-              });
-              stream.on('close', (code: number) => {
-                clearTimeout(timeout);
-                resolved = true;
-                conn.end();
-                if (code === 0) {
-                  resolve({ success: true, data: { status: 'logged_in', output } });
-                } else {
-                  resolve({ success: false, error: { message: output || 'Azure CLI login failed' } });
-                }
-              });
-            });
-          });
-
-          conn.on('error', (err) => {
-            clearTimeout(timeout);
-            if (!resolved) {
-              resolved = true;
-              resolve({ success: false, error: { message: `SSH Error: ${err.message}` } });
-            }
-          });
-
-          conn.connect({
-            host: hetznerSettings.host,
-            port: hetznerSettings.port || 22,
-            username: hetznerSettings.username,
-            password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-            privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-              ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-              : undefined,
-            readyTimeout: 10000
-          });
-        });
-      } else {
-        return { success: false, error: { message: 'Hetzner SSH not configured - cannot run az login on remote server' } };
-      }
+      // Execute az login locally
+      return await azureCliLogin(settings.clientId, settings.clientSecret, settings.tenantId);
     } catch (err) {
       logger.error({ err }, 'Azure CLI login failed');
       return { success: false, error: { message: 'Azure CLI login failed' } };
     }
   });
 
-  // Claude Code login (browser-based OAuth)
+  // Claude Code login check (local execution)
   fastify.post('/api/settings/claude/login', async (_request, _reply) => {
     try {
-      const hetznerSettings = await settingsRepository.getHetznerSettings();
-
-      if (!hetznerSettings) {
-        return { success: false, error: { message: 'Hetzner SSH not configured' } };
-      }
-
-      // Check if Claude is already logged in
-      const { Client } = await import('ssh2');
-
-      return new Promise((resolve) => {
-        const conn = new Client();
-        let resolved = false;
-
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            conn.end();
-            resolve({ success: false, error: { message: 'Claude login check timeout' } });
-          }
-        }, 30000);
-
-        conn.on('ready', () => {
-          // First check if claude is installed and current auth status
-          conn.exec('claude --version 2>&1 && cat ~/.config/claude/config.json 2>/dev/null || echo "NOT_CONFIGURED"', (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-              resolve({ success: false, error: { message: err.message } });
-              return;
-            }
-
-            let output = '';
-            stream.on('data', (data: Buffer) => {
-              output += data.toString();
-            });
-            stream.stderr.on('data', (data: Buffer) => {
-              output += data.toString();
-            });
-            stream.on('close', () => {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-
-              const isInstalled = !output.includes('command not found');
-              const isConfigured = !output.includes('NOT_CONFIGURED');
-
-              resolve({
-                success: true,
-                data: {
-                  installed: isInstalled,
-                  configured: isConfigured,
-                  output: output.slice(0, 500),
-                  instructions: isInstalled && !isConfigured
-                    ? 'Run "claude" on the server to authenticate via browser. Use the Remote Terminal in Hetzner settings.'
-                    : isInstalled && isConfigured
-                    ? 'Claude Code is configured and ready'
-                    : 'Claude Code is not installed. Install with: npm install -g @anthropic-ai/claude-code'
-                }
-              });
-            });
-          });
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          if (!resolved) {
-            resolved = true;
-            resolve({ success: false, error: { message: `SSH Error: ${err.message}` } });
-          }
-        });
-
-        conn.connect({
-          host: hetznerSettings.host,
-          port: hetznerSettings.port || 22,
-          username: hetznerSettings.username,
-          password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-          privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-            ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-            : undefined,
-          readyTimeout: 10000
-        });
-      });
+      // Check Claude auth status locally
+      return await checkClaudeAuthLocal();
     } catch (err) {
       logger.error({ err }, 'Claude Code login check failed');
       return { success: false, error: { message: 'Claude Code login check failed' } };
     }
   });
 
-  // Check installed tools on remote server
+  // Check installed tools (local execution)
   fastify.get('/api/settings/tools/check', async (_request, _reply) => {
     try {
-      const hetznerSettings = await settingsRepository.getHetznerSettings();
-
-      if (!hetznerSettings) {
-        return { success: false, error: { message: 'Hetzner SSH not configured' } };
-      }
-
-      const { Client } = await import('ssh2');
-
-      return new Promise((resolve) => {
-        const conn = new Client();
-        let resolved = false;
-
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            conn.end();
-            resolve({ success: false, error: { message: 'Tools check timeout' } });
-          }
-        }, 30000);
-
-        conn.on('ready', () => {
-          // Check multiple tools
-          const checkCommand = `
-echo "=== TOOLS CHECK ==="
-echo "NODE:"
-node --version 2>&1 || echo "NOT_INSTALLED"
-echo "NPM:"
-npm --version 2>&1 || echo "NOT_INSTALLED"
-echo "DOCKER:"
-docker --version 2>&1 || echo "NOT_INSTALLED"
-echo "CLAUDE:"
-claude --version 2>&1 || echo "NOT_INSTALLED"
-echo "AZURE_CLI:"
-az --version 2>&1 | head -1 || echo "NOT_INSTALLED"
-echo "GIT:"
-git --version 2>&1 || echo "NOT_INSTALLED"
-echo "PYTHON:"
-python3 --version 2>&1 || echo "NOT_INSTALLED"
-echo "=== END ==="
-`;
-          conn.exec(checkCommand, (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-              resolve({ success: false, error: { message: err.message } });
-              return;
-            }
-
-            let output = '';
-            stream.on('data', (data: Buffer) => {
-              output += data.toString();
-            });
-            stream.stderr.on('data', (data: Buffer) => {
-              output += data.toString();
-            });
-            stream.on('close', () => {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-
-              // Parse tool versions
-              const tools: Record<string, { installed: boolean; version: string }> = {};
-              const lines = output.split('\n');
-              let currentTool = '';
-
-              for (const line of lines) {
-                if (line.endsWith(':')) {
-                  currentTool = line.replace(':', '').toLowerCase();
-                } else if (currentTool && line.trim()) {
-                  const isInstalled = !line.includes('NOT_INSTALLED') && !line.includes('command not found') && !line.includes('not found');
-                  tools[currentTool] = {
-                    installed: isInstalled,
-                    version: isInstalled ? line.trim() : 'Not installed'
-                  };
-                  currentTool = '';
-                }
-              }
-
-              resolve({
-                success: true,
-                data: {
-                  host: hetznerSettings.host,
-                  tools,
-                  checkedAt: new Date().toISOString()
-                }
-              });
-            });
-          });
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          if (!resolved) {
-            resolved = true;
-            resolve({ success: false, error: { message: `SSH Error: ${err.message}` } });
-          }
-        });
-
-        conn.connect({
-          host: hetznerSettings.host,
-          port: hetznerSettings.port || 22,
-          username: hetznerSettings.username,
-          password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-          privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-            ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-            : undefined,
-          readyTimeout: 10000
-        });
-      });
+      // Always use local mode
+      return await checkToolsLocal();
     } catch (err) {
       logger.error({ err }, 'Tools check failed');
       return { success: false, error: { message: 'Tools check failed' } };
     }
   });
 
-  // Install tool on remote server
+  // Install tool locally
   fastify.post('/api/settings/tools/install', async (request, _reply) => {
     try {
-      const hetznerSettings = await settingsRepository.getHetznerSettings();
       const { tool } = request.body as { tool: string };
-
-      if (!hetznerSettings) {
-        return { success: false, error: { message: 'Hetzner SSH not configured' } };
-      }
 
       if (!tool) {
         return { success: false, error: { message: 'Tool name is required' } };
       }
 
-      const { Client } = await import('ssh2');
-
-      // Installation commands for each tool
-      const installCommands: Record<string, string> = {
-        claude: 'npm install -g @anthropic-ai/claude-code',
-        'azure-cli': 'curl -sL https://aka.ms/InstallAzureCLIDeb | bash',
-        node: 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs',
-        docker: 'curl -fsSL https://get.docker.com | bash',
-        git: 'apt-get update && apt-get install -y git',
-        python: 'apt-get update && apt-get install -y python3 python3-pip'
-      };
-
-      const command = installCommands[tool];
-      if (!command) {
-        return { success: false, error: { message: `Unknown tool: ${tool}. Available: ${Object.keys(installCommands).join(', ')}` } };
-      }
-
-      return new Promise((resolve) => {
-        const conn = new Client();
-        let resolved = false;
-
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            conn.end();
-            resolve({ success: false, error: { message: 'Installation timeout (5 min)' } });
-          }
-        }, 300000); // 5 minutes for installation
-
-        conn.on('ready', () => {
-          conn.exec(command, (err, stream) => {
-            if (err) {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-              resolve({ success: false, error: { message: err.message } });
-              return;
-            }
-
-            let stdout = '';
-            let stderr = '';
-
-            stream.on('data', (data: Buffer) => {
-              stdout += data.toString();
-            });
-            stream.stderr.on('data', (data: Buffer) => {
-              stderr += data.toString();
-            });
-            stream.on('close', (code: number) => {
-              clearTimeout(timeout);
-              resolved = true;
-              conn.end();
-
-              if (code === 0) {
-                resolve({
-                  success: true,
-                  data: {
-                    tool,
-                    installed: true,
-                    output: stdout.slice(-1000)
-                  }
-                });
-              } else {
-                resolve({
-                  success: false,
-                  error: {
-                    message: `Installation failed with exit code ${code}`,
-                    details: (stderr || stdout).slice(-1000)
-                  }
-                });
-              }
-            });
-          });
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          if (!resolved) {
-            resolved = true;
-            resolve({ success: false, error: { message: `SSH Error: ${err.message}` } });
-          }
-        });
-
-        conn.connect({
-          host: hetznerSettings.host,
-          port: hetznerSettings.port || 22,
-          username: hetznerSettings.username,
-          password: hetznerSettings.authMethod === 'password' ? hetznerSettings.password : undefined,
-          privateKey: hetznerSettings.authMethod === 'ssh-key' && hetznerSettings.sshKeyPath
-            ? require('fs').readFileSync(hetznerSettings.sshKeyPath)
-            : undefined,
-          readyTimeout: 10000
-        });
-      });
+      // Install tool locally
+      return await installToolLocal(tool);
     } catch (err) {
       logger.error({ err }, 'Tool installation failed');
       return { success: false, error: { message: 'Tool installation failed' } };
