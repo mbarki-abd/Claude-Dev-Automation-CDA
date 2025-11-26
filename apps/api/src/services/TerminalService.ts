@@ -7,13 +7,8 @@ import { createChildLogger } from '../utils/logger.js';
 const logger = createChildLogger('terminal-service');
 const execAsync = promisify(exec);
 
-// Try to import node-pty if available
+// node-pty is optional - not used in production
 let pty: any = null;
-try {
-  pty = await import('node-pty');
-} catch (e) {
-  logger.info('node-pty not available, using basic shell');
-}
 
 export interface CommandResult {
   output: string;
