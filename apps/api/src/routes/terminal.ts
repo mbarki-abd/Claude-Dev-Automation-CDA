@@ -1,8 +1,8 @@
 import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 import type { ApiResponse } from '@cda/shared';
 import { createChildLogger } from '../utils/logger.js';
 import { addSystemLog } from './system-logs.js';
@@ -12,12 +12,19 @@ const logger = createChildLogger('terminal');
 
 // Workspace configuration
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || '/tmp/claude-workspace';
-const CLAUDE_CODE_PATH = process.env.CLAUDE_CODE_PATH || 'claude';
 
 // Execute command schema
 const executeSchema = z.object({
   command: z.string().min(1).max(1000),
   workDir: z.string().optional(),
+});
+
+// Streaming command schema
+const streamingExecuteSchema = z.object({
+  command: z.string().min(1).max(1000),
+  args: z.array(z.string()).optional(),
+  workDir: z.string().optional(),
+  sessionId: z.string().optional(),
 });
 
 // List files schema
@@ -29,6 +36,12 @@ const listFilesSchema = z.object({
 const claudeCodeSchema = z.object({
   prompt: z.string().min(1).max(10000),
   workDir: z.string().optional(),
+  sessionId: z.string().optional(),
+});
+
+// Kill session schema
+const killSessionSchema = z.object({
+  sessionId: z.string().min(1),
 });
 
 export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
@@ -65,7 +78,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
     return response;
   });
 
-  // Execute command in container
+  // Execute command (non-streaming, waits for completion)
   fastify.post<{
     Body: z.infer<typeof executeSchema>;
   }>('/api/terminal/execute', async (request, reply) => {
@@ -101,7 +114,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
 
-      // Execute command using terminal service (SSH or local)
+      // Execute command using terminal service (local)
       const result = await terminalService.executeCommand(body.command, workDir);
 
       addSystemLog(
@@ -136,6 +149,137 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
       return response;
     }
+  });
+
+  // Execute command with streaming (returns immediately, output via WebSocket)
+  fastify.post<{
+    Body: z.infer<typeof streamingExecuteSchema>;
+  }>('/api/terminal/stream', async (request) => {
+    const body = streamingExecuteSchema.parse(request.body);
+    const workDir = body.workDir || WORKSPACE_DIR;
+    const sessionId = body.sessionId || uuidv4();
+
+    logger.info({ sessionId, command: body.command, workDir }, 'Starting streaming command');
+    addSystemLog('info', 'execution', 'terminal', `Streaming: ${body.command}`, {
+      metadata: { sessionId, workDir },
+    });
+
+    // Start the streaming command
+    terminalService.executeCommandStreaming(
+      sessionId,
+      body.command,
+      body.args || [],
+      workDir
+    );
+
+    const response: ApiResponse<{ sessionId: string; message: string }> = {
+      success: true,
+      data: {
+        sessionId,
+        message: 'Command started. Connect to WebSocket and subscribe to terminal:' + sessionId + ' for output.',
+      },
+    };
+
+    return response;
+  });
+
+  // Execute Claude Code with streaming (returns immediately, output via WebSocket)
+  fastify.post<{
+    Body: z.infer<typeof claudeCodeSchema>;
+  }>('/api/terminal/claude-code', async (request) => {
+    const body = claudeCodeSchema.parse(request.body);
+    const workDir = body.workDir || WORKSPACE_DIR;
+    const sessionId = body.sessionId || uuidv4();
+
+    logger.info({ sessionId, prompt: body.prompt.slice(0, 100), workDir }, 'Starting Claude Code streaming');
+    addSystemLog('info', 'execution', 'claude-code', `Claude Code: ${body.prompt.slice(0, 50)}...`, {
+      metadata: { sessionId, workDir },
+    });
+
+    // Start Claude Code with streaming
+    terminalService.executeClaudeCodeStreaming(sessionId, body.prompt, workDir);
+
+    const response: ApiResponse<{ sessionId: string; message: string }> = {
+      success: true,
+      data: {
+        sessionId,
+        message: 'Claude Code started. Connect to WebSocket and subscribe to terminal:' + sessionId + ' for output.',
+      },
+    };
+
+    return response;
+  });
+
+  // Start interactive terminal session
+  fastify.post<{
+    Body: { workDir?: string; sessionId?: string };
+  }>('/api/terminal/interactive', async (request) => {
+    const workDir = request.body?.workDir || WORKSPACE_DIR;
+    const sessionId = request.body?.sessionId || uuidv4();
+
+    logger.info({ sessionId, workDir }, 'Starting interactive terminal');
+    addSystemLog('info', 'execution', 'terminal', 'Interactive terminal started', {
+      metadata: { sessionId, workDir },
+    });
+
+    // Create interactive session
+    terminalService.createInteractiveSession(sessionId, workDir);
+
+    const response: ApiResponse<{ sessionId: string; message: string }> = {
+      success: true,
+      data: {
+        sessionId,
+        message: 'Interactive terminal started. Connect to WebSocket and subscribe to terminal:' + sessionId,
+      },
+    };
+
+    return response;
+  });
+
+  // Kill a terminal session
+  fastify.post<{
+    Body: z.infer<typeof killSessionSchema>;
+  }>('/api/terminal/kill', async (request) => {
+    const body = killSessionSchema.parse(request.body);
+
+    logger.info({ sessionId: body.sessionId }, 'Killing terminal session');
+
+    const killed = terminalService.killSession(body.sessionId);
+
+    const response: ApiResponse<{ killed: boolean }> = {
+      success: true,
+      data: { killed },
+    };
+
+    return response;
+  });
+
+  // Get active terminal sessions
+  fastify.get('/api/terminal/sessions', async () => {
+    const sessions = terminalService.getActiveSessions();
+
+    const response: ApiResponse<{
+      sessions: Array<{
+        id: string;
+        type: string;
+        createdAt: Date;
+        command?: string;
+        workDir?: string;
+      }>;
+    }> = {
+      success: true,
+      data: {
+        sessions: sessions.map((s) => ({
+          id: s.id,
+          type: s.type,
+          createdAt: s.createdAt,
+          command: s.command,
+          workDir: s.workDir,
+        })),
+      },
+    };
+
+    return response;
   });
 
   // List files in directory
@@ -203,110 +347,6 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       throw error;
-    }
-  });
-
-  // Execute Claude Code command
-  fastify.post<{
-    Body: z.infer<typeof claudeCodeSchema>;
-  }>('/api/terminal/claude-code', async (request) => {
-    const body = claudeCodeSchema.parse(request.body);
-    const workDir = body.workDir || WORKSPACE_DIR;
-
-    logger.info({ prompt: body.prompt.slice(0, 100), workDir }, 'Executing Claude Code');
-    addSystemLog('info', 'execution', 'terminal', `Claude Code: ${body.prompt.slice(0, 50)}...`, {
-      metadata: { workDir },
-    });
-
-    try {
-      // Execute Claude Code locally in the container
-      const args = [
-        '--print',
-        '--dangerously-skip-permissions',
-        body.prompt,
-      ];
-
-      return new Promise((resolve) => {
-        const proc = spawn(CLAUDE_CODE_PATH, args, {
-          cwd: workDir,
-          shell: true,
-          env: { ...process.env, PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/root/.local/bin' },
-        });
-
-        let stdout = '';
-        let stderr = '';
-
-        proc.stdout.on('data', (data) => {
-          stdout += data.toString();
-        });
-
-        proc.stderr.on('data', (data) => {
-          stderr += data.toString();
-        });
-
-        proc.on('close', (code) => {
-          const exitCode = code || 0;
-          const output = stdout + (stderr ? `\n\nStderr:\n${stderr}` : '');
-
-          addSystemLog(
-            exitCode === 0 ? 'success' : 'error',
-            'execution',
-            'claude-code',
-            `Claude Code completed`,
-            {
-              details: output.slice(0, 500),
-              metadata: { exitCode, outputLength: output.length },
-            }
-          );
-
-          const response: ApiResponse<{ output: string; exitCode: number }> = {
-            success: true,
-            data: { output, exitCode },
-          };
-
-          resolve(response);
-        });
-
-        proc.on('error', (error) => {
-          addSystemLog('error', 'execution', 'claude-code', 'Claude Code failed to start', {
-            details: error.message,
-          });
-
-          const response: ApiResponse<{ output: string; exitCode: number }> = {
-            success: true,
-            data: { output: error.message, exitCode: 1 },
-          };
-
-          resolve(response);
-        });
-
-        // Timeout after 5 minutes
-        setTimeout(() => {
-          proc.kill();
-          addSystemLog('warning', 'execution', 'claude-code', 'Claude Code timed out');
-
-          const response: ApiResponse<{ output: string; exitCode: number }> = {
-            success: true,
-            data: {
-              output: stdout + '\n\n[Process timed out after 5 minutes]',
-              exitCode: 124,
-            },
-          };
-
-          resolve(response);
-        }, 300000);
-      });
-    } catch (error: any) {
-      addSystemLog('error', 'execution', 'claude-code', 'Claude Code error', {
-        details: error.message,
-      });
-
-      const response: ApiResponse<{ output: string; exitCode: number }> = {
-        success: true,
-        data: { output: error.message, exitCode: 1 },
-      };
-
-      return response;
     }
   });
 

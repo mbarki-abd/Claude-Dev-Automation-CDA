@@ -13,11 +13,13 @@ import { terminalRoutes } from './routes/terminal.js';
 import { cliAuthRoutes } from './routes/cli-auth.js';
 import { WS_EVENTS } from '@cda/shared';
 import { cliAuthService } from './services/CLIAuthService.js';
+import { terminalService } from './services/TerminalService.js';
 import { taskRepository } from './database/repositories/TaskRepository.js';
 import { executionRepository } from './database/repositories/ExecutionRepository.js';
 import { proposalRepository } from './database/repositories/ProposalRepository.js';
 import { claudeCodeService } from './services/ClaudeCodeService.js';
 import { plannerSyncService } from './services/PlannerSyncService.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const logger = createChildLogger('server');
 
@@ -179,11 +181,82 @@ export function setupWebSocket(server: ReturnType<typeof Fastify>['server']) {
       }
     });
 
-    // Handle terminal resize (forward to terminal manager if implemented)
-    socket.on(WS_EVENTS.TERMINAL_RESIZE, (data: { taskId: string; cols: number; rows: number }) => {
+    // Handle terminal resize
+    socket.on(WS_EVENTS.TERMINAL_RESIZE, (data: { sessionId: string; cols: number; rows: number }) => {
       logger.debug({ socketId: socket.id, ...data }, 'Terminal resize');
-      // Forward to all clients watching this task for terminal sync
-      io.to(`task:${data.taskId}`).emit(WS_EVENTS.TERMINAL_RESIZE, data);
+      terminalService.resize(data.sessionId, data.cols, data.rows);
+    });
+
+    // Terminal subscriptions
+    socket.on('subscribe:terminal', (sessionId: string) => {
+      socket.join(`terminal:${sessionId}`);
+      logger.debug({ socketId: socket.id, sessionId }, 'Subscribed to terminal session');
+    });
+
+    socket.on('unsubscribe:terminal', (sessionId: string) => {
+      socket.leave(`terminal:${sessionId}`);
+      logger.debug({ socketId: socket.id, sessionId }, 'Unsubscribed from terminal session');
+    });
+
+    // Start terminal command with streaming
+    socket.on(WS_EVENTS.TERMINAL_START, (data: { command: string; args?: string[]; workDir?: string; sessionId?: string }) => {
+      const sessionId = data.sessionId || uuidv4();
+      logger.info({ socketId: socket.id, sessionId, command: data.command }, 'Starting terminal command');
+
+      // Join the terminal room
+      socket.join(`terminal:${sessionId}`);
+
+      // Emit session started
+      socket.emit(WS_EVENTS.TERMINAL_STARTED, { sessionId });
+
+      // Start the streaming command
+      terminalService.executeCommandStreaming(
+        sessionId,
+        data.command,
+        data.args || [],
+        data.workDir
+      );
+    });
+
+    // Start Claude Code with streaming
+    socket.on('terminal:claude-code', (data: { prompt: string; workDir?: string; sessionId?: string }) => {
+      const sessionId = data.sessionId || uuidv4();
+      logger.info({ socketId: socket.id, sessionId, prompt: data.prompt.slice(0, 100) }, 'Starting Claude Code');
+
+      // Join the terminal room
+      socket.join(`terminal:${sessionId}`);
+
+      // Emit session started
+      socket.emit(WS_EVENTS.TERMINAL_STARTED, { sessionId });
+
+      // Start Claude Code streaming
+      terminalService.executeClaudeCodeStreaming(sessionId, data.prompt, data.workDir);
+    });
+
+    // Start interactive terminal session
+    socket.on('terminal:interactive', (data: { workDir?: string; sessionId?: string }) => {
+      const sessionId = data.sessionId || uuidv4();
+      logger.info({ socketId: socket.id, sessionId }, 'Starting interactive terminal');
+
+      // Join the terminal room
+      socket.join(`terminal:${sessionId}`);
+
+      // Emit session started
+      socket.emit(WS_EVENTS.TERMINAL_STARTED, { sessionId });
+
+      // Create interactive session
+      terminalService.createInteractiveSession(sessionId, data.workDir);
+    });
+
+    // Send input to terminal
+    socket.on(WS_EVENTS.TERMINAL_INPUT, (data: { sessionId: string; input: string }) => {
+      terminalService.sendInput(data.sessionId, data.input);
+    });
+
+    // Kill terminal session
+    socket.on(WS_EVENTS.TERMINAL_KILL, (data: { sessionId: string }) => {
+      logger.info({ socketId: socket.id, sessionId: data.sessionId }, 'Killing terminal session');
+      terminalService.killSession(data.sessionId);
     });
 
     // Handle sync trigger
@@ -227,6 +300,29 @@ export function setupWebSocket(server: ReturnType<typeof Fastify>['server']) {
 
   cliAuthService.on('output', (data) => {
     io.to(`cli-auth:${data.sessionId}`).emit('cli-auth:output', data);
+  });
+
+  // Forward terminal service events to WebSocket clients
+  terminalService.on('output', (data: { sessionId: string; data: string; type: string }) => {
+    io.to(`terminal:${data.sessionId}`).emit(WS_EVENTS.TERMINAL_OUTPUT, {
+      sessionId: data.sessionId,
+      data: data.data,
+      type: data.type,
+    });
+  });
+
+  terminalService.on('error', (data: { sessionId: string; error: string }) => {
+    io.to(`terminal:${data.sessionId}`).emit(WS_EVENTS.TERMINAL_ERROR, {
+      sessionId: data.sessionId,
+      error: data.error,
+    });
+  });
+
+  terminalService.on('exit', (data: { sessionId: string; exitCode: number }) => {
+    io.to(`terminal:${data.sessionId}`).emit(WS_EVENTS.TERMINAL_EXIT, {
+      sessionId: data.sessionId,
+      exitCode: data.exitCode,
+    });
   });
 
   return io;

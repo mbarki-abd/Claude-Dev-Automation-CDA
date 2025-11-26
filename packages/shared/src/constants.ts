@@ -124,10 +124,19 @@ export const WS_EVENTS = {
   PROPOSAL_RESOLVED: 'proposal:resolved',
   SYNC_UPDATE: 'sync:update',
 
+  // Terminal Events (Server to Client)
+  TERMINAL_OUTPUT: 'terminal:output',
+  TERMINAL_ERROR: 'terminal:error',
+  TERMINAL_EXIT: 'terminal:exit',
+  TERMINAL_STARTED: 'terminal:started',
+
   // Client to Server
   TASK_CANCEL: 'task:cancel',
   PROPOSAL_RESOLVE: 'proposal:resolve',
   TERMINAL_RESIZE: 'terminal:resize',
+  TERMINAL_START: 'terminal:start',
+  TERMINAL_KILL: 'terminal:kill',
+  TERMINAL_INPUT: 'terminal:input',
   SYNC_TRIGGER: 'sync:trigger',
 } as const;
 
