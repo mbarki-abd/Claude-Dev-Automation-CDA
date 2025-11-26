@@ -3,12 +3,13 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import { createChildLogger } from '../utils/logger.js';
+import * as nodePty from 'node-pty';
 
 const logger = createChildLogger('terminal-service');
 const execAsync = promisify(exec);
 
-// node-pty is optional - not used in production
-let pty: any = null;
+// node-pty for full PTY support
+const pty = nodePty;
 
 export interface CommandResult {
   output: string;
