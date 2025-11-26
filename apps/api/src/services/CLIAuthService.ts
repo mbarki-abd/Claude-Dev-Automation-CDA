@@ -2,9 +2,11 @@ import { EventEmitter } from 'events';
 import { spawn, exec, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { createChildLogger } from '../utils/logger.js';
+import * as nodePty from 'node-pty';
 
 const logger = createChildLogger('cli-auth');
 const execAsync = promisify(exec);
+const pty = nodePty;
 
 export interface AuthSession {
   id: string;
@@ -16,7 +18,7 @@ export interface AuthSession {
   message?: string;
   createdAt: Date;
   expiresAt?: Date;
-  process?: ChildProcess;
+  process?: ChildProcess | nodePty.IPty;
 }
 
 export interface AuthProgress {
@@ -36,7 +38,7 @@ export class CLIAuthService extends EventEmitter {
   }
 
   /**
-   * Start Claude Code authentication flow (local execution)
+   * Start Claude Code authentication flow (local execution with PTY)
    */
   async startClaudeCodeAuth(): Promise<AuthSession> {
     const sessionId = this.generateSessionId();
@@ -50,19 +52,27 @@ export class CLIAuthService extends EventEmitter {
     };
     this.sessions.set(sessionId, session);
 
-    logger.info({ sessionId }, 'Starting Claude Code authentication (local)');
+    logger.info({ sessionId }, 'Starting Claude Code authentication with PTY');
 
     try {
       // Ensure workspace exists
       await execAsync('mkdir -p /tmp/claude-workspace');
 
-      const childProcess = spawn('claude', [], {
+      // Use PTY for proper interactive Claude CLI
+      const proc = pty.spawn('claude', [], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
         cwd: '/tmp/claude-workspace',
-        shell: true,
-        env: { ...process.env, TERM: 'xterm-256color' },
+        env: {
+          ...process.env,
+          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/root/.local/bin',
+          TERM: 'xterm-256color',
+          FORCE_COLOR: '1',
+        },
       });
 
-      session.process = childProcess;
+      session.process = proc;
       let buffer = '';
       let step = 0;
 
@@ -70,13 +80,13 @@ export class CLIAuthService extends EventEmitter {
         session.status = 'failed';
         session.message = 'Authentication timeout (10 minutes)';
         this.emitProgress(session);
-        childProcess.kill();
+        proc.kill();
       }, 10 * 60 * 1000);
 
-      childProcess.stdout?.on('data', (data: Buffer) => {
-        const str = data.toString();
-        buffer += str;
-        this.emit('output', { sessionId: session.id, data: str });
+      // PTY data handler
+      proc.onData((data: string) => {
+        buffer += data;
+        this.emit('output', { sessionId: session.id, data });
 
         // Extract OAuth URL
         const urlMatch = buffer.match(/https:\/\/claude\.ai\/oauth\/authorize[^\s\x1b\x00-\x1f]*/);
@@ -91,12 +101,12 @@ export class CLIAuthService extends EventEmitter {
         // Auto-navigate through menus
         if (buffer.includes('Choose the text style') && step === 0) {
           step = 1;
-          setTimeout(() => childProcess.stdin?.write('\n'), 1000);
+          setTimeout(() => proc.write('\r'), 1000);
         }
 
         if ((buffer.includes('Select login method') || buffer.includes('Choose an authentication method')) && step === 1) {
           step = 2;
-          setTimeout(() => childProcess.stdin?.write('\n'), 1500);
+          setTimeout(() => proc.write('\r'), 1500);
         }
 
         // Check for success
@@ -108,30 +118,19 @@ export class CLIAuthService extends EventEmitter {
           logger.info({ sessionId: session.id }, 'Claude Code authentication successful');
 
           setTimeout(() => {
-            childProcess.stdin?.write('\x03'); // Ctrl+C
+            proc.write('\x03'); // Ctrl+C
           }, 2000);
         }
       });
 
-      childProcess.stderr?.on('data', (data: Buffer) => {
-        buffer += data.toString();
-        this.emit('output', { sessionId: session.id, data: data.toString() });
-      });
-
-      childProcess.on('close', (_code: number) => {
+      proc.onExit(({ exitCode }: { exitCode: number }) => {
         clearTimeout(timeout);
         if (session.status !== 'success') {
           session.status = 'failed';
-          session.message = session.message || buffer.slice(-500);
+          session.message = session.message || `Process exited with code ${exitCode}`;
         }
         this.emitProgress(session);
-      });
-
-      childProcess.on('error', (err: Error) => {
-        clearTimeout(timeout);
-        session.status = 'failed';
-        session.message = `Process error: ${err.message}`;
-        this.emitProgress(session);
+        logger.info({ sessionId: session.id, exitCode }, 'Claude auth process exited');
       });
 
       // Wait for auth URL or timeout
@@ -143,11 +142,11 @@ export class CLIAuthService extends EventEmitter {
           }
         }, 500);
 
-        // Max wait 30 seconds for URL
+        // Max wait 60 seconds for URL (increased from 30)
         setTimeout(() => {
           clearInterval(checkInterval);
           resolve();
-        }, 30000);
+        }, 60000);
       });
 
       return session;
@@ -155,6 +154,7 @@ export class CLIAuthService extends EventEmitter {
       session.status = 'failed';
       session.message = `Error: ${(err as Error).message}`;
       this.emitProgress(session);
+      logger.error({ sessionId, err }, 'Failed to start Claude auth');
       return session;
     }
   }
@@ -172,8 +172,8 @@ export class CLIAuthService extends EventEmitter {
       return { success: false, message: `Cannot submit code in status: ${session.status}` };
     }
 
-    if (!session.process?.stdin) {
-      return { success: false, message: 'Process stream not available' };
+    if (!session.process) {
+      return { success: false, message: 'Process not available' };
     }
 
     logger.info({ sessionId, codeLength: code.length }, 'Submitting auth code');
@@ -181,8 +181,16 @@ export class CLIAuthService extends EventEmitter {
     session.message = 'Submitting code...';
     this.emitProgress(session);
 
-    // Send the code to the Claude CLI process
-    session.process.stdin.write(code.trim() + '\n');
+    // Send the code to the process - handle both PTY and regular process
+    const proc = session.process as nodePty.IPty;
+    if (typeof proc.write === 'function') {
+      // PTY process - use write directly
+      proc.write(code.trim() + '\r');
+    } else {
+      // Regular process - use stdin
+      const regularProc = session.process as ChildProcess;
+      regularProc.stdin?.write(code.trim() + '\n');
+    }
 
     return { success: true, message: 'Code submitted, waiting for authentication...' };
   }
@@ -295,6 +303,7 @@ export class CLIAuthService extends EventEmitter {
 
   /**
    * Start Google Cloud SDK device code flow (local execution)
+   * Uses --no-launch-browser which works on headless servers
    */
   async startGCloudAuth(): Promise<AuthSession> {
     const sessionId = this.generateSessionId();
@@ -311,7 +320,9 @@ export class CLIAuthService extends EventEmitter {
     logger.info({ sessionId }, 'Starting gcloud authentication (local)');
 
     try {
-      const childProcess = spawn('gcloud', ['auth', 'login', '--no-browser'], {
+      // Use --no-launch-browser instead of --no-browser
+      // This provides a URL that shows the auth code in the browser (no redirect needed)
+      const childProcess = spawn('gcloud', ['auth', 'login', '--no-launch-browser'], {
         shell: true,
         env: process.env,
       });
@@ -422,10 +433,18 @@ export class CLIAuthService extends EventEmitter {
 
     if (session.process) {
       try {
-        session.process.stdin?.write('\x03'); // Ctrl+C
-        setTimeout(() => {
-          session.process?.kill();
-        }, 500);
+        // Handle both PTY and regular process
+        const proc = session.process as nodePty.IPty;
+        if (typeof proc.write === 'function') {
+          // PTY process
+          proc.write('\x03'); // Ctrl+C
+          setTimeout(() => proc.kill(), 500);
+        } else {
+          // Regular process
+          const regularProc = session.process as ChildProcess;
+          regularProc.stdin?.write('\x03');
+          setTimeout(() => regularProc.kill(), 500);
+        }
       } catch {
         // Ignore errors during cleanup
       }
@@ -449,10 +468,23 @@ export class CLIAuthService extends EventEmitter {
       'gcloud': { authenticated: false },
     };
 
-    // Check Claude Code
+    // Check Claude Code - check credentials file at ~/.claude/.credentials.json
     try {
-      const { stdout } = await execAsync('cat ~/.config/claude/config.json 2>/dev/null || cat /root/.config/claude/config.json 2>/dev/null', { timeout: 5000 });
-      results['claude-code'] = { authenticated: stdout.length > 10, details: 'Config found' };
+      const { stdout } = await execAsync('cat ~/.claude/.credentials.json 2>/dev/null || cat /root/.claude/.credentials.json 2>/dev/null', { timeout: 5000 });
+      if (stdout.length > 10) {
+        const creds = JSON.parse(stdout);
+        if (creds.claudeAiOauth?.accessToken) {
+          const isExpired = creds.claudeAiOauth.expiresAt && Date.now() > creds.claudeAiOauth.expiresAt;
+          results['claude-code'] = {
+            authenticated: !isExpired,
+            details: isExpired ? 'Token expired' : `Authenticated (${creds.claudeAiOauth.subscriptionType || 'active'})`
+          };
+        } else {
+          results['claude-code'] = { authenticated: false, details: 'No access token' };
+        }
+      } else {
+        results['claude-code'] = { authenticated: false, details: 'Empty credentials' };
+      }
     } catch {
       results['claude-code'] = { authenticated: false, details: 'Not configured' };
     }

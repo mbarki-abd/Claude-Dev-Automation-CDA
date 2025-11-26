@@ -1,41 +1,22 @@
 import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
-  testDir: './tests/e2e',
-  fullyParallel: true,
+  testDir: './tests',
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  workers: 1,
   reporter: 'html',
+  timeout: 60000,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: 'https://cda.ilinqsoft.com',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    headless: false,  // Run in headed mode - visible browser
-    launchOptions: {
-      slowMo: 500,  // Slow down actions for visibility
-    },
   },
-
   projects: [
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-    },
-  ],
-
-  webServer: [
-    {
-      command: 'pnpm --filter @cda/api dev',
-      url: 'http://localhost:3000/api/health/live',
-      reuseExistingServer: !process.env.CI,
-      timeout: 120000,
-    },
-    {
-      command: 'pnpm --filter @cda/dashboard dev',
-      url: 'http://localhost:5173',
-      reuseExistingServer: !process.env.CI,
-      timeout: 120000,
     },
   ],
 });

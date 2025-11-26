@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "CLI Auth Manager",
+  "version": "1.1.0",
+  "description": "Manage authentication for Claude Code, Azure CLI, and Google Cloud SDK",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://console.anthropic.com/*",
+    "https://claude.ai/*",
+    "https://login.microsoftonline.com/*",
+    "https://microsoft.com/*",
+    "https://accounts.google.com/*",
+    "https://cloud.google.com/*",
+    "http://localhost:*/*",
+    "https://cda.ilinqsoft.com/*",
+    "wss://cda.ilinqsoft.com/*"
+  ],
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://console.anthropic.com/*",
+        "https://claude.ai/*",
+        "https://login.microsoftonline.com/*",
+        "https://microsoft.com/*",
+        "https://accounts.google.com/*"
+      ],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://cda.ilinqsoft.com/*",
+        "http://localhost:5173/*",
+        "http://localhost:3000/*"
+      ],
+      "js": ["content/dashboard.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

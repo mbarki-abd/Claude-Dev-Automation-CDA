@@ -12,14 +12,20 @@
     "clean": "pnpm -r run clean",
     "db:migrate": "pnpm --filter @cda/api run db:migrate",
     "db:seed": "pnpm --filter @cda/api run db:seed",
-    "docker:build": "docker-compose build",
-    "docker:up": "docker-compose up -d",
-    "docker:down": "docker-compose down",
+    "docker:build": "docker-compose -f infrastructure/docker-compose.native.yml build",
+    "docker:up": "docker-compose -f infrastructure/docker-compose.native.yml up -d",
+    "docker:down": "docker-compose -f infrastructure/docker-compose.native.yml down",
     "dev:api": "pnpm --filter @cda/api dev",
     "dev:dashboard": "pnpm --filter @cda/dashboard dev",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "test:production": "playwright test --config=playwright.config.production.ts",
+    "test:production:headed": "playwright test --config=playwright.config.production.ts --headed",
+    "test:production:ui": "playwright test --config=playwright.config.production.ts --ui",
+    "test:comprehensive": "playwright test comprehensive.spec.ts",
+    "test:api": "playwright test comprehensive.spec.ts --grep 'API'",
+    "test:ui": "playwright test comprehensive.spec.ts --grep 'UI'"
   },
   "keywords": [
     "claude",
@@ -35,7 +41,7 @@
     "pnpm": ">=8.0.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.56.1",
+    "@playwright/test": "^1.57.0",
     "node-ssh": "^13.2.1",
     "playwright": "^1.56.1",
     "typescript": "^5.3.0"

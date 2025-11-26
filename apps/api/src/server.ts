@@ -13,6 +13,7 @@ import { terminalRoutes } from './routes/terminal.js';
 import { cliAuthRoutes } from './routes/cli-auth.js';
 import { WS_EVENTS } from '@cda/shared';
 import { cliAuthService } from './services/CLIAuthService.js';
+import { remoteAuthService } from './services/RemoteAuthService.js';
 import { terminalService } from './services/TerminalService.js';
 import { taskRepository } from './database/repositories/TaskRepository.js';
 import { executionRepository } from './database/repositories/ExecutionRepository.js';
@@ -300,6 +301,46 @@ export function setupWebSocket(server: ReturnType<typeof Fastify>['server']) {
 
   cliAuthService.on('output', (data) => {
     io.to(`cli-auth:${data.sessionId}`).emit('cli-auth:output', data);
+  });
+
+  // Forward remote auth service events to WebSocket clients
+  remoteAuthService.on('credentials:local:updated', (status) => {
+    io.emit('remote-auth:local-updated', status);
+    logger.debug('Remote auth local credentials updated');
+  });
+
+  remoteAuthService.on('credentials:remote:updated', (status) => {
+    io.emit('remote-auth:remote-updated', status);
+    logger.debug('Remote auth remote credentials updated');
+  });
+
+  remoteAuthService.on('transfer:started', (data) => {
+    io.emit('remote-auth:transfer-started', data);
+    logger.debug({ target: data.target }, 'Remote auth transfer started');
+  });
+
+  remoteAuthService.on('transfer:progress', (data) => {
+    io.emit('remote-auth:transfer-progress', data);
+  });
+
+  remoteAuthService.on('transfer:complete', (result) => {
+    io.emit('remote-auth:transfer-complete', result);
+    logger.debug({ success: result.success }, 'Remote auth transfer complete');
+  });
+
+  remoteAuthService.on('transfer:error', (result) => {
+    io.emit('remote-auth:transfer-error', result);
+    logger.error({ message: result.message }, 'Remote auth transfer error');
+  });
+
+  remoteAuthService.on('oauth:started', (session) => {
+    io.emit('remote-auth:oauth-started', session);
+    logger.debug({ sessionId: session.sessionId }, 'Remote auth OAuth started');
+  });
+
+  remoteAuthService.on('oauth:complete', (status) => {
+    io.emit('remote-auth:oauth-complete', status);
+    logger.info('Remote auth OAuth complete');
   });
 
   // Forward terminal service events to WebSocket clients

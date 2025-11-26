@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLI Auth Manager</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 380px;
+      min-height: 500px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      padding: 16px;
+    }
+
+    header {
+      text-align: center;
+      padding-bottom: 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      margin-bottom: 16px;
+    }
+
+    header h1 {
+      font-size: 1.1rem;
+      background: linear-gradient(90deg, #00d4ff, #7c3aed);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    header p {
+      font-size: 0.75rem;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    .server-toggle {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .server-toggle button {
+      flex: 1;
+      padding: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      background: transparent;
+      color: #888;
+      font-size: 0.7rem;
+      cursor: pointer;
+    }
+
+    .server-toggle button.active {
+      background: rgba(124, 58, 237, 0.3);
+      border-color: #7c3aed;
+      color: white;
+    }
+
+    .connection-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .status-dot.connected { background: #10b981; }
+    .status-dot.disconnected { background: #ef4444; }
+    .status-dot.pending { background: #f59e0b; }
+
+    .connection-text {
+      font-size: 0.8rem;
+      color: #888;
+    }
+
+    /* Auth Provider Cards */
+    .auth-providers {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .auth-card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 12px;
+      transition: all 0.2s;
+    }
+
+    .auth-card:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .auth-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .auth-card-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .auth-card-title .icon {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    .auth-card-title .icon.claude {
+      background: linear-gradient(135deg, #d97706, #f59e0b);
+    }
+
+    .auth-card-title .icon.azure {
+      background: linear-gradient(135deg, #0078d4, #00bcf2);
+    }
+
+    .auth-card-title .icon.gcloud {
+      background: linear-gradient(135deg, #ea4335, #fbbc04, #34a853, #4285f4);
+    }
+
+    .auth-card-title h3 {
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .auth-status-badge {
+      font-size: 0.65rem;
+      padding: 3px 8px;
+      border-radius: 10px;
+      font-weight: 500;
+    }
+
+    .auth-status-badge.authenticated {
+      background: rgba(16, 185, 129, 0.2);
+      color: #10b981;
+    }
+
+    .auth-status-badge.not-authenticated {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+    }
+
+    .auth-status-badge.pending {
+      background: rgba(245, 158, 11, 0.2);
+      color: #f59e0b;
+    }
+
+    .auth-card-details {
+      font-size: 0.7rem;
+      color: #888;
+      margin-bottom: 8px;
+    }
+
+    .auth-card-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      flex: 1;
+    }
+
+    .btn-auth {
+      background: linear-gradient(90deg, #7c3aed, #00d4ff);
+      color: white;
+    }
+
+    .btn-auth:hover {
+      opacity: 0.9;
+    }
+
+    .btn-auth:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    /* Device Code Section */
+    .device-code-section {
+      display: none;
+      background: rgba(124, 58, 237, 0.1);
+      border: 1px solid rgba(124, 58, 237, 0.3);
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 8px;
+      text-align: center;
+    }
+
+    .device-code-section.active {
+      display: block;
+    }
+
+    .device-code-label {
+      font-size: 0.7rem;
+      color: #a78bfa;
+      margin-bottom: 6px;
+    }
+
+    .device-code {
+      font-family: 'Courier New', monospace;
+      font-size: 1.4rem;
+      letter-spacing: 0.2em;
+      font-weight: bold;
+      color: #00d4ff;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+    }
+
+    .device-code-url {
+      font-size: 0.65rem;
+      color: #888;
+    }
+
+    .device-code-url a {
+      color: #a78bfa;
+      text-decoration: none;
+    }
+
+    /* Manual Code Input */
+    .manual-input-section {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .manual-input-section h4 {
+      font-size: 0.75rem;
+      color: #888;
+      margin-bottom: 8px;
+    }
+
+    .input-group {
+      display: flex;
+      gap: 8px;
+    }
+
+    .input-group input {
+      flex: 1;
+      padding: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.3);
+      color: white;
+      font-size: 0.8rem;
+    }
+
+    .input-group input:focus {
+      outline: none;
+      border-color: #7c3aed;
+    }
+
+    .input-group select {
+      padding: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.3);
+      color: white;
+      font-size: 0.8rem;
+    }
+
+    .input-group button {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      background: #7c3aed;
+      color: white;
+      cursor: pointer;
+      font-size: 0.75rem;
+    }
+
+    /* Log Section */
+    .log-section {
+      margin-top: 12px;
+      max-height: 80px;
+      overflow-y: auto;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 6px;
+      padding: 8px;
+    }
+
+    .log-entry {
+      font-size: 0.65rem;
+      color: #a5b4fc;
+      padding: 2px 0;
+    }
+
+    .log-entry.success { color: #10b981; }
+    .log-entry.error { color: #ef4444; }
+    .log-entry.warning { color: #f59e0b; }
+
+    /* Footer */
+    footer {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 0.65rem;
+      color: #666;
+    }
+
+    footer a {
+      color: #7c3aed;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CLI Auth Manager</h1>
+    <p>Authenticate Claude, Azure CLI & Google Cloud</p>
+  </header>
+
+  <div class="server-toggle">
+    <button id="btn-remote" class="active">Remote Server</button>
+    <button id="btn-local">Local Server</button>
+  </div>
+
+  <div class="connection-status">
+    <span class="status-dot" id="connection-dot"></span>
+    <span class="connection-text" id="connection-text">Checking connection...</span>
+  </div>
+
+  <div class="auth-providers">
+    <!-- Claude Code -->
+    <div class="auth-card" data-provider="claude">
+      <div class="auth-card-header">
+        <div class="auth-card-title">
+          <div class="icon claude">C</div>
+          <h3>Claude Code</h3>
+        </div>
+        <span class="auth-status-badge not-authenticated" id="claude-status">Not Authenticated</span>
+      </div>
+      <div class="auth-card-details" id="claude-details">Anthropic Claude CLI authentication</div>
+      <div class="auth-card-actions">
+        <button class="btn btn-auth" id="btn-auth-claude">Authenticate</button>
+        <button class="btn btn-secondary" id="btn-refresh-claude">Refresh</button>
+      </div>
+      <div class="device-code-section" id="claude-device-code">
+        <div class="device-code-label">Enter this code in the browser:</div>
+        <div class="device-code" id="claude-code">--------</div>
+        <div class="device-code-url">Opening browser automatically...</div>
+      </div>
+    </div>
+
+    <!-- Azure CLI -->
+    <div class="auth-card" data-provider="azure">
+      <div class="auth-card-header">
+        <div class="auth-card-title">
+          <div class="icon azure">A</div>
+          <h3>Azure CLI</h3>
+        </div>
+        <span class="auth-status-badge not-authenticated" id="azure-status">Not Authenticated</span>
+      </div>
+      <div class="auth-card-details" id="azure-details">Microsoft Azure CLI authentication</div>
+      <div class="auth-card-actions">
+        <button class="btn btn-auth" id="btn-auth-azure">Authenticate</button>
+        <button class="btn btn-secondary" id="btn-refresh-azure">Refresh</button>
+      </div>
+      <div class="device-code-section" id="azure-device-code">
+        <div class="device-code-label">Enter this code at microsoft.com/devicelogin:</div>
+        <div class="device-code" id="azure-code">--------</div>
+        <div class="device-code-url">Opening <a href="https://microsoft.com/devicelogin" target="_blank">microsoft.com/devicelogin</a></div>
+      </div>
+    </div>
+
+    <!-- Google Cloud -->
+    <div class="auth-card" data-provider="gcloud">
+      <div class="auth-card-header">
+        <div class="auth-card-title">
+          <div class="icon gcloud">G</div>
+          <h3>Google Cloud</h3>
+        </div>
+        <span class="auth-status-badge not-authenticated" id="gcloud-status">Not Authenticated</span>
+      </div>
+      <div class="auth-card-details" id="gcloud-details">Google Cloud SDK authentication</div>
+      <div class="auth-card-actions">
+        <button class="btn btn-auth" id="btn-auth-gcloud">Authenticate</button>
+        <button class="btn btn-secondary" id="btn-refresh-gcloud">Refresh</button>
+      </div>
+      <div class="device-code-section" id="gcloud-device-code">
+        <div class="device-code-label">Sign in with Google in the browser</div>
+        <div class="device-code" id="gcloud-code">--------</div>
+        <div class="device-code-url">Opening Google OAuth...</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="manual-input-section">
+    <h4>Manual Code Entry</h4>
+    <div class="input-group">
+      <select id="manual-provider">
+        <option value="claude">Claude</option>
+        <option value="azure">Azure</option>
+        <option value="gcloud">Google</option>
+      </select>
+      <input type="text" id="manual-code-input" placeholder="Enter auth code...">
+      <button id="btn-submit-code">Send</button>
+    </div>
+  </div>
+
+  <div class="log-section" id="log-container">
+    <div class="log-entry">Extension initialized</div>
+  </div>
+
+  <footer>
+    <a href="https://cda.ilinqsoft.com" target="_blank">CDA Dashboard</a> | v1.1.0
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
