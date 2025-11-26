@@ -228,15 +228,23 @@ class TerminalService extends EventEmitter {
    * Create a basic shell process (fallback when node-pty is not available)
    */
   private createBasicShell(sessionId: string, cwd: string): ChildProcess {
-    const proc = spawn('/bin/bash', ['-i'], {
+    // Use bash without -i flag since we don't have a proper TTY
+    // Instead, source bashrc manually and set PS1 for prompt
+    const proc = spawn('/bin/bash', ['--norc', '--noprofile'], {
       cwd,
       env: {
         ...process.env,
         PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/root/.local/bin',
         TERM: 'xterm-256color',
+        PS1: '\\u@\\h:\\w\\$ ',
+        HOME: process.env.HOME || '/root',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Send initial setup commands
+    proc.stdin?.write('export PS1="\\u@\\h:\\w\\$ "\n');
+    proc.stdin?.write('cd ' + cwd + '\n');
 
     proc.stdout?.on('data', (data: Buffer) => {
       this.emit('output', { sessionId, data: data.toString(), type: 'stdout' });

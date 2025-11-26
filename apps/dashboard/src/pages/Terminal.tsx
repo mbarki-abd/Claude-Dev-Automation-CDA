@@ -66,7 +66,7 @@ export function Terminal() {
       searchAddon: null,
       sessionId: null,
       status: 'connecting',
-      workDir: '/workspace',
+      workDir: '/root',
     };
 
     setTabs((prev) => [...prev, newTab]);
