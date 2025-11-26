@@ -48,7 +48,7 @@ export function resolveProposal(proposalId: string, option: string): void {
 }
 
 export function resizeTerminal(sessionId: string, cols: number, rows: number): void {
-  getSocket().emit(WS_EVENTS.TERMINAL_RESIZE, { sessionId, cols, rows });
+  getSocket().emit('terminal:resize', { sessionId, cols, rows });
 }
 
 // Terminal functions
@@ -61,7 +61,7 @@ export function unsubscribeFromTerminal(sessionId: string): void {
 }
 
 export function startTerminalCommand(data: { command: string; args?: string[]; workDir?: string; sessionId?: string }): void {
-  getSocket().emit(WS_EVENTS.TERMINAL_START, data);
+  getSocket().emit('terminal:start', data);
 }
 
 export function startClaudeCode(data: { prompt: string; workDir?: string; sessionId?: string }): void {
@@ -73,11 +73,11 @@ export function startInteractiveTerminal(data: { workDir?: string; sessionId?: s
 }
 
 export function sendTerminalInput(sessionId: string, input: string): void {
-  getSocket().emit(WS_EVENTS.TERMINAL_INPUT, { sessionId, input });
+  getSocket().emit('terminal:input', { sessionId, input });
 }
 
 export function killTerminalSession(sessionId: string): void {
-  getSocket().emit(WS_EVENTS.TERMINAL_KILL, { sessionId });
+  getSocket().emit('terminal:kill', { sessionId });
 }
 
 export function triggerSync(): void {
@@ -128,28 +128,28 @@ export function onSyncUpdate(callback: (data: { tasks: unknown[] }) => void): ()
 // Terminal event listeners
 export function onTerminalStarted(callback: (data: { sessionId: string }) => void): () => void {
   const socket = getSocket();
-  socket.on(WS_EVENTS.TERMINAL_STARTED, callback);
-  return () => socket.off(WS_EVENTS.TERMINAL_STARTED, callback);
+  socket.on('terminal:started', callback);
+  return () => socket.off('terminal:started', callback);
 }
 
 export function onTerminalOutput(
   callback: (data: { sessionId: string; data: string; type: 'stdout' | 'stderr' }) => void
 ): () => void {
   const socket = getSocket();
-  socket.on(WS_EVENTS.TERMINAL_OUTPUT, callback);
-  return () => socket.off(WS_EVENTS.TERMINAL_OUTPUT, callback);
+  socket.on('terminal:output', callback);
+  return () => socket.off('terminal:output', callback);
 }
 
 export function onTerminalError(callback: (data: { sessionId: string; error: string }) => void): () => void {
   const socket = getSocket();
-  socket.on(WS_EVENTS.TERMINAL_ERROR, callback);
-  return () => socket.off(WS_EVENTS.TERMINAL_ERROR, callback);
+  socket.on('terminal:error', callback);
+  return () => socket.off('terminal:error', callback);
 }
 
 export function onTerminalExit(callback: (data: { sessionId: string; exitCode: number }) => void): () => void {
   const socket = getSocket();
-  socket.on(WS_EVENTS.TERMINAL_EXIT, callback);
-  return () => socket.off(WS_EVENTS.TERMINAL_EXIT, callback);
+  socket.on('terminal:exit', callback);
+  return () => socket.off('terminal:exit', callback);
 }
 
 export function disconnectSocket(): void {
