@@ -126,7 +126,7 @@ class TerminalService extends EventEmitter {
   }
 
   /**
-   * Execute Claude Code with streaming output
+   * Execute Claude Code with streaming output in interactive PTY
    */
   executeClaudeCodeStreaming(
     sessionId: string,
@@ -135,9 +135,70 @@ class TerminalService extends EventEmitter {
     options?: StreamingOptions
   ): TerminalSession {
     const claudePath = process.env.CLAUDE_CODE_PATH || 'claude';
-    const args = ['--print', '--dangerously-skip-permissions', prompt];
+    const cwd = workDir || '/root';
 
-    return this.executeCommandStreaming(sessionId, claudePath, args, workDir, options);
+    logger.info({ sessionId, prompt: prompt.slice(0, 100), cwd }, 'Starting Claude Code in PTY');
+
+    // Use PTY for full interactive Claude Code experience
+    if (pty) {
+      try {
+        const proc = pty.spawn(claudePath, ['--dangerously-skip-permissions'], {
+          name: 'xterm-256color',
+          cols: 120,
+          rows: 40,
+          cwd,
+          env: {
+            ...process.env,
+            PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/root/.local/bin',
+            TERM: 'xterm-256color',
+            FORCE_COLOR: '1',
+            NO_COLOR: '',
+          },
+        });
+
+        const session: TerminalSession = {
+          id: sessionId,
+          type: 'local',
+          process: proc,
+          createdAt: new Date(),
+          command: `claude ${prompt.slice(0, 50)}...`,
+          workDir: cwd,
+        };
+
+        this.sessions.set(sessionId, session);
+
+        // PTY data handler - stream all output
+        proc.onData((data: string) => {
+          this.emit('output', { sessionId, data, type: 'stdout' });
+          options?.onOutput?.(data);
+        });
+
+        proc.onExit(({ exitCode }: { exitCode: number }) => {
+          logger.info({ sessionId, exitCode }, 'Claude Code session exited');
+          this.emit('exit', { sessionId, exitCode });
+          options?.onExit?.(exitCode);
+          this.sessions.delete(sessionId);
+        });
+
+        // Send the initial prompt after a short delay to let Claude initialize
+        setTimeout(() => {
+          if (prompt && prompt.trim()) {
+            proc.write(prompt + '\n');
+          }
+        }, 500);
+
+        return session;
+      } catch (e) {
+        logger.error({ error: e }, 'Failed to create Claude Code PTY session');
+        // Fallback to non-PTY streaming
+        const args = ['--print', '--dangerously-skip-permissions', prompt];
+        return this.executeCommandStreaming(sessionId, claudePath, args, workDir, options);
+      }
+    } else {
+      // Fallback without PTY
+      const args = ['--print', '--dangerously-skip-permissions', prompt];
+      return this.executeCommandStreaming(sessionId, claudePath, args, workDir, options);
+    }
   }
 
   /**
