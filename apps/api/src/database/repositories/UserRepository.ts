@@ -1,4 +1,4 @@
-import { query, transaction } from '../client.js';
+import { query } from '../client.js';
 import { createChildLogger } from '../../utils/logger.js';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';

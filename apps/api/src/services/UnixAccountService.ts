@@ -2,7 +2,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs/promises';
 import path from 'path';
-import { userRepository, User } from '../database/repositories/UserRepository.js';
+import { userRepository } from '../database/repositories/UserRepository.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const execAsync = promisify(exec);
@@ -10,7 +10,7 @@ const logger = createChildLogger('unix-account-service');
 
 const BASE_HOME_DIR = process.env.BASE_HOME_DIR || '/home';
 const DEFAULT_SHELL = process.env.DEFAULT_SHELL || '/bin/bash';
-const MIN_UID = parseInt(process.env.MIN_UID || '10000', 10);
+// MIN_UID is reserved for future use
 const MAX_UID = parseInt(process.env.MAX_UID || '60000', 10);
 
 export interface UnixAccountResult {

@@ -109,6 +109,8 @@ export class ClaudeCodeService extends EventEmitter {
       logger.info({ executionId, prompt: prompt.substring(0, 100) }, 'Starting Claude Code execution');
 
       // Build command arguments
+      // Note: --dangerously-skip-permissions requires running as non-root user
+      // PM2 should be configured to run as the 'cda' user
       const args = [
         '--print',  // Non-interactive mode, print response
         '--dangerously-skip-permissions',  // Allow all tools without prompting (for automation)
@@ -276,9 +278,18 @@ export class ClaudeCodeService extends EventEmitter {
   private getEnvironment(): NodeJS.ProcessEnv {
     const env = { ...process.env };
 
-    // Set API key if using api-key auth method
+    // Clear SUDO_* environment variables to avoid root detection issues
+    delete env.SUDO_USER;
+    delete env.SUDO_UID;
+    delete env.SUDO_GID;
+    delete env.SUDO_COMMAND;
+
     if (this.config.authMethod === 'api-key' && this.config.apiKey) {
+      // Set API key if using api-key auth method
       env.ANTHROPIC_API_KEY = this.config.apiKey;
+    } else {
+      // Using OAuth auth - remove any API key to prevent Claude CLI from using it
+      delete env.ANTHROPIC_API_KEY;
     }
 
     return env;

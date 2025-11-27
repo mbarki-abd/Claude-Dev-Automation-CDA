@@ -88,20 +88,20 @@ class AuthService {
       }
 
       if (!user) {
-        await userRepository.logAudit(null, 'login_failed', 'auth', null, { emailOrUsername, reason: 'user_not_found' }, ipAddress, userAgent);
+        await userRepository.logAudit(null, 'login_failed', 'auth', undefined, { emailOrUsername, reason: 'user_not_found' }, ipAddress, userAgent);
         return { success: false, error: 'Invalid credentials' };
       }
 
       // Check user status
       if (user.status !== 'active') {
-        await userRepository.logAudit(user.id, 'login_failed', 'auth', null, { reason: 'account_inactive', status: user.status }, ipAddress, userAgent);
+        await userRepository.logAudit(user.id, 'login_failed', 'auth', undefined, { reason: 'account_inactive', status: user.status }, ipAddress, userAgent);
         return { success: false, error: `Account is ${user.status}` };
       }
 
       // Verify password
       const isValid = await userRepository.verifyPassword(user, password);
       if (!isValid) {
-        await userRepository.logAudit(user.id, 'login_failed', 'auth', null, { reason: 'invalid_password' }, ipAddress, userAgent);
+        await userRepository.logAudit(user.id, 'login_failed', 'auth', undefined, { reason: 'invalid_password' }, ipAddress, userAgent);
         return { success: false, error: 'Invalid credentials' };
       }
 
@@ -112,7 +112,7 @@ class AuthService {
       const tokens = await this.generateTokens(user, ipAddress, userAgent);
 
       // Log audit
-      await userRepository.logAudit(user.id, 'login', 'auth', null, { method: 'password' }, ipAddress, userAgent);
+      await userRepository.logAudit(user.id, 'login', 'auth', undefined, { method: 'password' }, ipAddress, userAgent);
 
       logger.info({ userId: user.id, email: user.email }, 'User logged in');
 
@@ -174,7 +174,7 @@ class AuthService {
         await userRepository.revokeAllUserSessions(userId);
       }
 
-      await userRepository.logAudit(userId, 'logout', 'auth', null, {}, ipAddress, userAgent);
+      await userRepository.logAudit(userId, 'logout', 'auth', undefined, {}, ipAddress, userAgent);
 
       logger.info({ userId }, 'User logged out');
 
@@ -189,7 +189,7 @@ class AuthService {
     try {
       const count = await userRepository.revokeAllUserSessions(userId);
 
-      await userRepository.logAudit(userId, 'logout_all', 'auth', null, { sessionsRevoked: count }, ipAddress, userAgent);
+      await userRepository.logAudit(userId, 'logout_all', 'auth', undefined, { sessionsRevoked: count }, ipAddress, userAgent);
 
       logger.info({ userId, sessionsRevoked: count }, 'All sessions revoked');
 
@@ -218,13 +218,13 @@ class AuthService {
     };
 
     // Generate access token
-    const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: ACCESS_TOKEN_EXPIRY });
+    const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: this.parseExpiry(ACCESS_TOKEN_EXPIRY) });
 
     // Generate refresh token with session ID
     const refreshToken = jwt.sign(
       { ...payload, sessionId: crypto.randomUUID() },
       JWT_REFRESH_SECRET,
-      { expiresIn: REFRESH_TOKEN_EXPIRY }
+      { expiresIn: this.parseExpiry(REFRESH_TOKEN_EXPIRY) }
     );
 
     // Calculate expiry
@@ -285,7 +285,7 @@ class AuthService {
       // Verify current password
       const isValid = await userRepository.verifyPassword(user, currentPassword);
       if (!isValid) {
-        await userRepository.logAudit(userId, 'password_change_failed', 'auth', null, { reason: 'invalid_current_password' }, ipAddress, userAgent);
+        await userRepository.logAudit(userId, 'password_change_failed', 'auth', undefined, { reason: 'invalid_current_password' }, ipAddress, userAgent);
         return { success: false, error: 'Current password is incorrect' };
       }
 
@@ -295,7 +295,7 @@ class AuthService {
       // Revoke all sessions
       await userRepository.revokeAllUserSessions(userId);
 
-      await userRepository.logAudit(userId, 'password_changed', 'auth', null, {}, ipAddress, userAgent);
+      await userRepository.logAudit(userId, 'password_changed', 'auth', undefined, {}, ipAddress, userAgent);
 
       logger.info({ userId }, 'Password changed');
 

@@ -22,11 +22,13 @@
     "@fastify/websocket": "^8.3.0",
     "@microsoft/microsoft-graph-client": "^3.0.0",
     "@types/ssh2": "^1.15.5",
+    "bcrypt": "^5.1.1",
     "bullmq": "^5.1.0",
     "dockerode": "^4.0.0",
     "dotenv": "^16.3.0",
     "fastify": "^4.25.0",
     "ioredis": "^5.3.0",
+    "jsonwebtoken": "^9.0.2",
     "pg": "^8.11.0",
     "pino": "^8.17.0",
     "pino-pretty": "^10.3.0",
@@ -37,6 +39,8 @@
     "zod": "^3.22.0"
   },
   "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
+    "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^20.10.0",
     "@types/pg": "^8.10.0",
     "@types/uuid": "^9.0.0",

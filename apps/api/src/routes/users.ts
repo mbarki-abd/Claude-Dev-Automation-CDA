@@ -41,55 +41,60 @@ const saveClaudeAuthSchema = z.object({
 });
 
 // Middleware to verify admin access
-function requireAdmin(request: FastifyRequest, reply: FastifyReply) {
+function requireAdmin(request: FastifyRequest, reply: FastifyReply): undefined {
   const authHeader = request.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {
-    return reply.code(401).send({
+    reply.code(401).send({
       success: false,
       error: { code: 'UNAUTHORIZED', message: 'Missing authorization header' },
     });
+    return;
   }
 
   const token = authHeader.substring(7);
   const payload = authService.verifyAccessToken(token);
 
   if (!payload) {
-    return reply.code(401).send({
+    reply.code(401).send({
       success: false,
       error: { code: 'UNAUTHORIZED', message: 'Invalid access token' },
     });
+    return;
   }
 
   if (payload.role !== 'admin') {
-    return reply.code(403).send({
+    reply.code(403).send({
       success: false,
       error: { code: 'FORBIDDEN', message: 'Admin access required' },
     });
+    return;
   }
 
   (request as any).user = payload;
 }
 
 // Middleware to verify authenticated user
-function requireAuth(request: FastifyRequest, reply: FastifyReply) {
+function requireAuth(request: FastifyRequest, reply: FastifyReply): undefined {
   const authHeader = request.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {
-    return reply.code(401).send({
+    reply.code(401).send({
       success: false,
       error: { code: 'UNAUTHORIZED', message: 'Missing authorization header' },
     });
+    return;
   }
 
   const token = authHeader.substring(7);
   const payload = authService.verifyAccessToken(token);
 
   if (!payload) {
-    return reply.code(401).send({
+    reply.code(401).send({
       success: false,
       error: { code: 'UNAUTHORIZED', message: 'Invalid access token' },
     });
+    return;
   }
 
   (request as any).user = payload;
@@ -97,7 +102,7 @@ function requireAuth(request: FastifyRequest, reply: FastifyReply) {
 
 export async function userRoutes(fastify: FastifyInstance) {
   // List all users (admin only)
-  fastify.get('/api/users', { preHandler: requireAdmin }, async (request: FastifyRequest, reply: FastifyReply) => {
+  fastify.get('/api/users', { preHandler: requireAdmin }, async (request: FastifyRequest, _reply: FastifyReply) => {
     const query = request.query as { page?: string; limit?: string; status?: string; role?: string };
 
     const result = await userRepository.findAll({

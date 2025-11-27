@@ -291,7 +291,7 @@ export function Terminal() {
 
       // Start Claude session after tab is created
       setTimeout(() => {
-        startClaudeCode({ prompt: claudePrompt, workDir: '/workspace', sessionId });
+        startClaudeCode({ prompt: claudePrompt, workDir: '/root', sessionId });
         subscribeToTerminal(sessionId);
         setTabs((prev) =>
           prev.map((t) => (t.id === tabId ? { ...t, sessionId, status: 'connected' as const } : t))
@@ -511,7 +511,7 @@ export function Terminal() {
           <span>
             {activeTab?.type === 'interactive' ? 'bash' : 'claude-code'}
           </span>
-          <span>{activeTab?.workDir || '/workspace'}</span>
+          <span>{activeTab?.workDir || '/root'}</span>
         </div>
         <div className="flex items-center gap-4">
           <span>

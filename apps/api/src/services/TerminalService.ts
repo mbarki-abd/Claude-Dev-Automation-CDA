@@ -235,7 +235,7 @@ class TerminalService extends EventEmitter {
    * Create an interactive terminal session with PTY
    */
   createInteractiveSession(sessionId: string, workDir?: string): TerminalSession {
-    const cwd = workDir || process.cwd();
+    const cwd = workDir || '/root';
     let proc: ChildProcess | any;
 
     // Try to use node-pty for full PTY support, fallback to basic shell
