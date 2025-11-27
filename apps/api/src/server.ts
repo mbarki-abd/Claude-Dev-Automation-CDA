@@ -11,6 +11,8 @@ import { plannerRoutes } from './routes/planner.js';
 import { systemLogsRoutes } from './routes/system-logs.js';
 import { terminalRoutes } from './routes/terminal.js';
 import { cliAuthRoutes } from './routes/cli-auth.js';
+import { authRoutes } from './routes/auth.js';
+import { userRoutes } from './routes/users.js';
 import { WS_EVENTS } from '@cda/shared';
 import { cliAuthService } from './services/CLIAuthService.js';
 import { remoteAuthService } from './services/RemoteAuthService.js';
@@ -66,6 +68,8 @@ export async function createServer() {
 
   // Register routes
   await fastify.register(healthRoutes);
+  await fastify.register(authRoutes);
+  await fastify.register(userRoutes);
   await fastify.register(taskRoutes);
   await fastify.register(executionRoutes);
   await fastify.register(proposalRoutes);
