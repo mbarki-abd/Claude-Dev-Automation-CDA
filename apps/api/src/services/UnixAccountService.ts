@@ -403,11 +403,14 @@ ${unixUsername} ALL=(ALL) NOPASSWD: /bin/systemctl restart *, /bin/systemctl sta
         await fs.writeFile(credentialsPath, JSON.stringify(credentials, null, 2));
       } else if (claudeAuth.auth.authMethod === 'oauth' && claudeAuth.tokens) {
         // For OAuth, write the tokens
+        const expiresAt = claudeAuth.tokens.expiresAt;
         const credentials = {
           type: 'oauth',
           accessToken: claudeAuth.tokens.accessToken,
           refreshToken: claudeAuth.tokens.refreshToken,
-          expiresAt: claudeAuth.tokens.expiresAt?.toISOString(),
+          expiresAt: expiresAt instanceof Date
+            ? expiresAt.toISOString()
+            : (typeof expiresAt === 'string' ? expiresAt : undefined),
           updatedAt: new Date().toISOString(),
         };
         await fs.writeFile(credentialsPath, JSON.stringify(credentials, null, 2));
