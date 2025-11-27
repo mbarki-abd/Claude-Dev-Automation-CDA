@@ -130,7 +130,7 @@ class UnixAccountService {
     logger.debug({ username, uid, gid }, 'System user created');
   }
 
-  private async setupHomeDirectory(homeDirectory: string, uid: number, gid: number, isAdmin: boolean = false): Promise<void> {
+  private async setupHomeDirectory(homeDirectory: string, uid: number, gid: number, _isAdmin: boolean = false): Promise<void> {
     // Create standard directories
     const directories = [
       '.config',
