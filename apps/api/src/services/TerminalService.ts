@@ -425,14 +425,23 @@ class TerminalService extends EventEmitter {
 
     if (pty) {
       try {
-        // Run Claude Code as the user
-        const proc = pty.spawn('sudo', ['-u', unixUsername, '-H', claudePath, '--dangerously-skip-permissions'], {
+        // Run Claude Code as the user with their full environment
+        // Using bash -l -c to load user's profile and bashrc which sets CLAUDE_CONFIG_DIR
+        const homeDir = user.homeDirectory || `/home/${unixUsername}`;
+        const proc = pty.spawn('sudo', [
+          '-u', unixUsername,
+          '-H',
+          'bash', '-l', '-c',
+          `export HOME="${homeDir}" && export CLAUDE_CONFIG_DIR="${homeDir}/.config/claude" && cd "${cwd}" && ${claudePath} --dangerously-skip-permissions`
+        ], {
           name: 'xterm-256color',
           cols: 120,
           rows: 40,
           cwd,
           env: {
             TERM: 'xterm-256color',
+            HOME: homeDir,
+            CLAUDE_CONFIG_DIR: `${homeDir}/.config/claude`,
           },
         });
 

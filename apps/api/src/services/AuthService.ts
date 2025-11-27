@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { userRepository, User, CreateUserInput } from '../database/repositories/UserRepository.js';
 import { createChildLogger } from '../utils/logger.js';
+import { unixAccountService } from './UnixAccountService.js';
 
 const logger = createChildLogger('auth-service');
 
@@ -60,8 +61,26 @@ class AuthService {
       // Create user
       const user = await userRepository.create(input);
 
+      // Auto-create Unix account for the new user
+      try {
+        const unixResult = await unixAccountService.createUnixAccount(user.id, user.username);
+        if (unixResult.success) {
+          logger.info({ userId: user.id, unixUsername: unixResult.username }, 'Unix account created for new user');
+          // Setup cloud CLI directories
+          await unixAccountService.setupCloudCLIConfig(user.id);
+        } else {
+          logger.warn({ userId: user.id, error: unixResult.error }, 'Failed to create Unix account for new user');
+        }
+      } catch (unixError) {
+        // Don't fail signup if Unix account creation fails - log and continue
+        logger.error({ error: unixError, userId: user.id }, 'Unix account creation error during signup');
+      }
+
       // Generate tokens
       const tokens = await this.generateTokens(user, ipAddress, userAgent);
+
+      // Refresh user data to include Unix account info
+      const updatedUser = await userRepository.findById(user.id);
 
       // Log audit
       await userRepository.logAudit(user.id, 'signup', 'user', user.id, { email: user.email }, ipAddress, userAgent);
@@ -70,7 +89,7 @@ class AuthService {
 
       return {
         success: true,
-        user: this.removePasswordHash(user),
+        user: this.removePasswordHash(updatedUser || user),
         tokens,
       };
     } catch (error) {

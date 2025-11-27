@@ -369,6 +369,104 @@ ${unixUsername} ALL=(ALL) NOPASSWD: /bin/systemctl restart *, /bin/systemctl sta
     }
   }
 
+  /**
+   * Sync Claude CLI credentials to user's home directory
+   * This writes the credentials to ~/.config/claude/credentials.json
+   */
+  async syncClaudeCredentials(userId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const user = await userRepository.findById(userId);
+      if (!user || !user.homeDirectory || !user.unixUid || !user.unixGid) {
+        return { success: false, error: 'User has no Unix account' };
+      }
+
+      // Get Claude auth from database
+      const claudeAuth = await userRepository.getClaudeAuth(userId);
+      if (!claudeAuth) {
+        logger.debug({ userId }, 'No Claude auth to sync');
+        return { success: true }; // Nothing to sync
+      }
+
+      const claudeDir = path.join(user.homeDirectory, '.config', 'claude');
+      await fs.mkdir(claudeDir, { recursive: true });
+
+      // Write credentials file based on auth method
+      const credentialsPath = path.join(claudeDir, 'credentials.json');
+
+      if (claudeAuth.auth.authMethod === 'api_key' && claudeAuth.apiKey) {
+        // For API key auth, write the key
+        const credentials = {
+          type: 'api_key',
+          apiKey: claudeAuth.apiKey,
+          updatedAt: new Date().toISOString(),
+        };
+        await fs.writeFile(credentialsPath, JSON.stringify(credentials, null, 2));
+      } else if (claudeAuth.auth.authMethod === 'oauth' && claudeAuth.tokens) {
+        // For OAuth, write the tokens
+        const credentials = {
+          type: 'oauth',
+          accessToken: claudeAuth.tokens.accessToken,
+          refreshToken: claudeAuth.tokens.refreshToken,
+          expiresAt: claudeAuth.tokens.expiresAt?.toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        await fs.writeFile(credentialsPath, JSON.stringify(credentials, null, 2));
+      }
+
+      // Set ownership to user
+      await execAsync(`chown ${user.unixUid}:${user.unixGid} "${credentialsPath}"`);
+      await execAsync(`chmod 600 "${credentialsPath}"`);
+
+      logger.info({ userId, path: credentialsPath }, 'Claude credentials synced to home directory');
+
+      return { success: true };
+    } catch (error) {
+      logger.error({ error, userId }, 'Failed to sync Claude credentials');
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Sync all cloud credentials to user's home directory
+   */
+  async syncAllCredentials(userId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const user = await userRepository.findById(userId);
+      if (!user || !user.homeDirectory) {
+        return { success: false, error: 'User has no Unix account' };
+      }
+
+      // Sync Claude credentials
+      await this.syncClaudeCredentials(userId);
+
+      // Get all user credentials
+      const credentials = await userRepository.getUserCredentials(userId);
+
+      for (const cred of credentials) {
+        try {
+          if (cred.provider === 'azure') {
+            // Azure credentials go to ~/.azure/
+            const azureDir = path.join(user.homeDirectory, '.azure');
+            await fs.mkdir(azureDir, { recursive: true });
+            // Azure stores credentials differently, skip for now
+          } else if (cred.provider === 'gcloud') {
+            // GCloud credentials go to ~/.config/gcloud/
+            const gcloudDir = path.join(user.homeDirectory, '.config', 'gcloud');
+            await fs.mkdir(gcloudDir, { recursive: true });
+            // GCloud stores credentials differently, skip for now
+          }
+        } catch (credError) {
+          logger.warn({ error: credError, provider: cred.provider }, 'Failed to sync credential');
+        }
+      }
+
+      return { success: true };
+    } catch (error) {
+      logger.error({ error, userId }, 'Failed to sync all credentials');
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
   async getAccountInfo(userId: string): Promise<{
     hasUnixAccount: boolean;
     username?: string;

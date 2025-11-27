@@ -149,7 +149,27 @@ export async function userRoutes(fastify: FastifyInstance) {
     }
 
     const user = await userRepository.create(body);
-    const { passwordHash, ...safeUser } = user;
+
+    // Auto-create Unix account for the new user
+    try {
+      const unixResult = await unixAccountService.createUnixAccount(user.id, user.username);
+      if (unixResult.success) {
+        // Setup cloud CLI directories
+        await unixAccountService.setupCloudCLIConfig(user.id);
+
+        // If user is admin, grant sudo access
+        if (body.role === 'admin') {
+          await unixAccountService.grantSudoAccess(user.id);
+        }
+      }
+    } catch (unixError) {
+      // Log but don't fail user creation
+      console.error('Unix account creation error:', unixError);
+    }
+
+    // Refresh user data to include Unix account info
+    const updatedUser = await userRepository.findById(user.id);
+    const { passwordHash, ...safeUser } = updatedUser || user;
 
     return {
       success: true,
@@ -512,6 +532,14 @@ export async function userRoutes(fastify: FastifyInstance) {
     } : undefined;
 
     const auth = await userRepository.saveClaudeAuth(id, body.authMethod, tokens, body.apiKey);
+
+    // Sync Claude credentials to user's home directory for CLI usage
+    try {
+      await unixAccountService.syncClaudeCredentials(id);
+    } catch (syncError) {
+      // Log but don't fail the request
+      console.error('Failed to sync Claude credentials to home directory:', syncError);
+    }
 
     return {
       success: true,
