@@ -1,7 +1,5 @@
 import { fetchWithAuth, User } from './auth';
 
-const API_URL = import.meta.env.VITE_API_URL || '';
-
 export interface CreateUserData {
   email: string;
   username: string;
