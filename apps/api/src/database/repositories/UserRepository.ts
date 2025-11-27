@@ -18,6 +18,8 @@ export interface User {
   unixGid?: number;
   homeDirectory?: string;
   shell: string;
+  hasSudo: boolean;
+  permissions: string[];
   avatarUrl?: string;
   timezone: string;
   locale: string;
@@ -126,6 +128,8 @@ class UserRepository {
       unixGid: row.unix_gid as number | undefined,
       homeDirectory: row.home_directory as string | undefined,
       shell: row.shell as string,
+      hasSudo: row.has_sudo as boolean ?? false,
+      permissions: (row.permissions as string[]) ?? [],
       avatarUrl: row.avatar_url as string | undefined,
       timezone: row.timezone as string,
       locale: row.locale as string,

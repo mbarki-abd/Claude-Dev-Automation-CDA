@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import { createChildLogger } from '../utils/logger.js';
 import * as nodePty from 'node-pty';
+import { userRepository } from '../database/repositories/UserRepository.js';
 
 const logger = createChildLogger('terminal-service');
 const execAsync = promisify(exec);
@@ -24,6 +25,8 @@ export interface TerminalSession {
   createdAt: Date;
   command?: string;
   workDir?: string;
+  userId?: string;
+  unixUsername?: string;
 }
 
 export interface StreamingOptions {
@@ -284,6 +287,199 @@ class TerminalService extends EventEmitter {
     logger.info({ sessionId, cwd }, 'Interactive session created');
 
     return session;
+  }
+
+  /**
+   * Create an interactive terminal session running as a specific user
+   */
+  async createUserInteractiveSession(sessionId: string, userId: string, workDir?: string): Promise<TerminalSession | null> {
+    const user = await userRepository.findById(userId);
+
+    if (!user || !user.unixUsername) {
+      logger.warn({ userId }, 'User has no Unix account, cannot create user session');
+      return null;
+    }
+
+    const cwd = workDir || user.homeDirectory || `/home/${user.unixUsername}`;
+    const unixUsername = user.unixUsername;
+    let proc: ChildProcess | any;
+
+    // Use sudo to run shell as the user with their environment
+    if (pty) {
+      try {
+        proc = pty.spawn('sudo', ['-u', unixUsername, '-H', '-i'], {
+          name: 'xterm-256color',
+          cols: 80,
+          rows: 30,
+          cwd,
+          env: {
+            TERM: 'xterm-256color',
+          },
+        });
+
+        // PTY data handler
+        proc.onData((data: string) => {
+          this.emit('output', { sessionId, data, type: 'stdout' });
+        });
+
+        proc.onExit(({ exitCode }: { exitCode: number }) => {
+          logger.info({ sessionId, userId, exitCode }, 'User interactive session exited');
+          this.emit('exit', { sessionId, exitCode });
+          this.sessions.delete(sessionId);
+        });
+      } catch (e) {
+        logger.warn({ error: e, userId }, 'Failed to create user PTY session');
+        return null;
+      }
+    } else {
+      logger.warn('node-pty not available for user session');
+      return null;
+    }
+
+    const session: TerminalSession = {
+      id: sessionId,
+      type: 'local',
+      process: proc,
+      createdAt: new Date(),
+      workDir: cwd,
+      userId,
+      unixUsername,
+    };
+
+    this.sessions.set(sessionId, session);
+    logger.info({ sessionId, userId, unixUsername, cwd }, 'User interactive session created');
+
+    return session;
+  }
+
+  /**
+   * Execute a command as a specific user (non-streaming)
+   */
+  async executeUserCommand(
+    userId: string,
+    command: string,
+    workDir?: string
+  ): Promise<CommandResult> {
+    const user = await userRepository.findById(userId);
+
+    if (!user || !user.unixUsername) {
+      return {
+        output: 'User has no Unix account',
+        exitCode: 1,
+        error: 'User has no Unix account',
+      };
+    }
+
+    const cwd = workDir || user.homeDirectory || `/home/${user.unixUsername}`;
+    const unixUsername = user.unixUsername;
+
+    try {
+      // Use sudo to run command as the user with their full environment
+      const fullCommand = `sudo -u ${unixUsername} -H bash -c 'source ~/.bashrc 2>/dev/null; cd "${cwd}" && ${command}'`;
+
+      const { stdout, stderr } = await execAsync(fullCommand, {
+        timeout: 60000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+
+      logger.debug({ userId, command, cwd }, 'User command executed');
+
+      return {
+        output: stdout || stderr,
+        exitCode: 0,
+        error: stderr ? stderr : undefined,
+      };
+    } catch (error: any) {
+      logger.error({ error, userId, command }, 'User command failed');
+      return {
+        output: error.stdout || error.stderr || error.message,
+        exitCode: error.code || 1,
+        error: error.stderr || error.message,
+      };
+    }
+  }
+
+  /**
+   * Execute Claude Code as a specific user with streaming
+   */
+  async executeUserClaudeCodeStreaming(
+    sessionId: string,
+    userId: string,
+    prompt: string,
+    workDir?: string,
+    options?: StreamingOptions
+  ): Promise<TerminalSession | null> {
+    const user = await userRepository.findById(userId);
+
+    if (!user || !user.unixUsername) {
+      logger.warn({ userId }, 'User has no Unix account for Claude Code');
+      options?.onError?.('User has no Unix account');
+      return null;
+    }
+
+    const cwd = workDir || user.homeDirectory || `/home/${user.unixUsername}`;
+    const unixUsername = user.unixUsername;
+    const claudePath = process.env.CLAUDE_CODE_PATH || 'claude';
+
+    logger.info({ sessionId, userId, unixUsername, prompt: prompt.slice(0, 100), cwd }, 'Starting Claude Code as user');
+
+    if (pty) {
+      try {
+        // Run Claude Code as the user
+        const proc = pty.spawn('sudo', ['-u', unixUsername, '-H', claudePath, '--dangerously-skip-permissions'], {
+          name: 'xterm-256color',
+          cols: 120,
+          rows: 40,
+          cwd,
+          env: {
+            TERM: 'xterm-256color',
+          },
+        });
+
+        const session: TerminalSession = {
+          id: sessionId,
+          type: 'local',
+          process: proc,
+          createdAt: new Date(),
+          command: `claude ${prompt.slice(0, 50)}...`,
+          workDir: cwd,
+          userId,
+          unixUsername,
+        };
+
+        this.sessions.set(sessionId, session);
+
+        // PTY data handler
+        proc.onData((data: string) => {
+          this.emit('output', { sessionId, data, type: 'stdout' });
+          options?.onOutput?.(data);
+        });
+
+        proc.onExit(({ exitCode }: { exitCode: number }) => {
+          logger.info({ sessionId, userId, exitCode }, 'User Claude Code session exited');
+          this.emit('exit', { sessionId, exitCode });
+          options?.onExit?.(exitCode);
+          this.sessions.delete(sessionId);
+        });
+
+        // Send the initial prompt after a short delay
+        setTimeout(() => {
+          if (prompt && prompt.trim()) {
+            proc.write(prompt + '\n');
+          }
+        }, 500);
+
+        return session;
+      } catch (e) {
+        logger.error({ error: e, userId }, 'Failed to create user Claude Code PTY session');
+        options?.onError?.('Failed to create Claude Code session');
+        return null;
+      }
+    } else {
+      logger.warn('node-pty not available for user Claude Code session');
+      options?.onError?.('PTY not available');
+      return null;
+    }
   }
 
   /**

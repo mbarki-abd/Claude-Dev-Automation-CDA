@@ -1,4 +1,4 @@
-import { FastifyPluginAsync } from 'fastify';
+import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -7,11 +7,49 @@ import type { ApiResponse } from '@cda/shared';
 import { createChildLogger } from '../utils/logger.js';
 import { addSystemLog } from './system-logs.js';
 import { terminalService } from '../services/TerminalService.js';
+import { authService, TokenPayload } from '../services/AuthService.js';
+import { userRepository } from '../database/repositories/UserRepository.js';
 
 const logger = createChildLogger('terminal');
 
-// Workspace configuration
+// Workspace configuration - fallback for admin/root usage
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || '/tmp/claude-workspace';
+
+// Auth middleware
+function requireAuth(request: FastifyRequest, reply: FastifyReply): TokenPayload | undefined {
+  const authHeader = request.headers.authorization;
+
+  if (!authHeader?.startsWith('Bearer ')) {
+    reply.code(401).send({
+      success: false,
+      error: { code: 'UNAUTHORIZED', message: 'Missing authorization header' },
+    });
+    return undefined;
+  }
+
+  const token = authHeader.substring(7);
+  const payload = authService.verifyAccessToken(token);
+
+  if (!payload) {
+    reply.code(401).send({
+      success: false,
+      error: { code: 'UNAUTHORIZED', message: 'Invalid access token' },
+    });
+    return undefined;
+  }
+
+  (request as any).user = payload;
+  return payload;
+}
+
+// Get user's workspace directory
+async function getUserWorkspace(userId: string): Promise<string> {
+  const user = await userRepository.findById(userId);
+  if (user?.homeDirectory) {
+    return path.join(user.homeDirectory, 'projects');
+  }
+  return WORKSPACE_DIR;
+}
 
 // Execute command schema
 const executeSchema = z.object({
@@ -46,20 +84,25 @@ const killSessionSchema = z.object({
 
 export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   // Get workspace info
-  fastify.get('/api/terminal/workspace', async () => {
-    const workspaceExists = fs.existsSync(WORKSPACE_DIR);
+  fastify.get('/api/terminal/workspace', async (request, reply) => {
+    // Authenticate user
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
+    const userWorkspace = await getUserWorkspace(user.userId);
+    const workspaceExists = fs.existsSync(userWorkspace);
     let files: string[] = [];
 
     if (workspaceExists) {
       try {
-        files = fs.readdirSync(WORKSPACE_DIR);
+        files = fs.readdirSync(userWorkspace);
       } catch (error) {
-        logger.error({ error }, 'Failed to read workspace directory');
+        logger.error({ error, userId: user.userId }, 'Failed to read workspace directory');
       }
     }
 
     addSystemLog('info', 'system', 'terminal', 'Workspace info requested', {
-      metadata: { workspaceExists, filesCount: files.length },
+      metadata: { workspaceExists, filesCount: files.length, userId: user.userId },
     });
 
     const response: ApiResponse<{
@@ -69,7 +112,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
     }> = {
       success: true,
       data: {
-        workspaceDir: WORKSPACE_DIR,
+        workspaceDir: userWorkspace,
         exists: workspaceExists,
         files,
       },
@@ -82,12 +125,17 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{
     Body: z.infer<typeof executeSchema>;
   }>('/api/terminal/execute', async (request, reply) => {
-    const body = executeSchema.parse(request.body);
-    const workDir = body.workDir || WORKSPACE_DIR;
+    // Authenticate user
+    const user = requireAuth(request, reply);
+    if (!user) return;
 
-    logger.info({ command: body.command, workDir }, 'Executing command');
+    const body = executeSchema.parse(request.body);
+    const userWorkspace = await getUserWorkspace(user.userId);
+    const workDir = body.workDir || userWorkspace;
+
+    logger.info({ command: body.command, workDir, userId: user.userId }, 'Executing command');
     addSystemLog('info', 'execution', 'terminal', `Executing: ${body.command}`, {
-      metadata: { workDir },
+      metadata: { workDir, userId: user.userId },
     });
 
     try {
@@ -114,8 +162,25 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
 
-      // Execute command using terminal service (local)
-      const result = await terminalService.executeCommand(body.command, workDir);
+      // Execute command as user (if they have a Unix account) or as root for admins
+      let result;
+      const dbUser = await userRepository.findById(user.userId);
+
+      if (dbUser?.unixUsername) {
+        // Execute as the user
+        result = await terminalService.executeUserCommand(user.userId, body.command, workDir);
+      } else if (user.role === 'admin') {
+        // Admin without Unix account - use root
+        result = await terminalService.executeCommand(body.command, workDir);
+      } else {
+        return {
+          success: false,
+          error: {
+            code: 'NO_UNIX_ACCOUNT',
+            message: 'You need a Unix account to execute commands. Contact an admin to create one.',
+          },
+        };
+      }
 
       addSystemLog(
         result.exitCode === 0 ? 'success' : 'error',
@@ -123,7 +188,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
         'terminal',
         `Command ${result.exitCode === 0 ? 'completed' : 'failed'}: ${body.command}`,
         {
-          metadata: { exitCode: result.exitCode, outputLength: result.output.length },
+          metadata: { exitCode: result.exitCode, outputLength: result.output.length, userId: user.userId },
         }
       );
 
@@ -139,7 +204,7 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
 
       addSystemLog('error', 'execution', 'terminal', `Command failed: ${body.command}`, {
         details: output,
-        metadata: { exitCode },
+        metadata: { exitCode, userId: user.userId },
       });
 
       const response: ApiResponse<{ output: string; exitCode: number }> = {
@@ -186,18 +251,48 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   // Execute Claude Code with streaming (returns immediately, output via WebSocket)
   fastify.post<{
     Body: z.infer<typeof claudeCodeSchema>;
-  }>('/api/terminal/claude-code', async (request) => {
+  }>('/api/terminal/claude-code', async (request, reply) => {
+    // Authenticate user
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
     const body = claudeCodeSchema.parse(request.body);
-    const workDir = body.workDir || WORKSPACE_DIR;
+    const userWorkspace = await getUserWorkspace(user.userId);
+    const workDir = body.workDir || userWorkspace;
     const sessionId = body.sessionId || uuidv4();
 
-    logger.info({ sessionId, prompt: body.prompt.slice(0, 100), workDir }, 'Starting Claude Code streaming');
+    logger.info({ sessionId, userId: user.userId, prompt: body.prompt.slice(0, 100), workDir }, 'Starting Claude Code streaming');
     addSystemLog('info', 'execution', 'claude-code', `Claude Code: ${body.prompt.slice(0, 50)}...`, {
-      metadata: { sessionId, workDir },
+      metadata: { sessionId, workDir, userId: user.userId },
     });
 
-    // Start Claude Code with streaming
-    terminalService.executeClaudeCodeStreaming(sessionId, body.prompt, workDir);
+    // Start Claude Code with streaming - as user if they have Unix account
+    const dbUser = await userRepository.findById(user.userId);
+
+    if (dbUser?.unixUsername) {
+      // Execute Claude Code as the user
+      const session = await terminalService.executeUserClaudeCodeStreaming(sessionId, user.userId, body.prompt, workDir);
+      if (!session) {
+        return {
+          success: false,
+          error: {
+            code: 'SESSION_FAILED',
+            message: 'Failed to create Claude Code session',
+          },
+        };
+      }
+    } else if (user.role === 'admin') {
+      // Admin without Unix account - use root
+      terminalService.executeClaudeCodeStreaming(sessionId, body.prompt, workDir);
+    } else {
+      return {
+        success: false,
+        error: {
+          code: 'NO_UNIX_ACCOUNT',
+          message: 'You need a Unix account to use Claude Code. Contact an admin to create one.',
+        },
+      };
+    }
 
     const response: ApiResponse<{ sessionId: string; message: string }> = {
       success: true,
@@ -213,17 +308,47 @@ export const terminalRoutes: FastifyPluginAsync = async (fastify) => {
   // Start interactive terminal session
   fastify.post<{
     Body: { workDir?: string; sessionId?: string };
-  }>('/api/terminal/interactive', async (request) => {
-    const workDir = request.body?.workDir || WORKSPACE_DIR;
+  }>('/api/terminal/interactive', async (request, reply) => {
+    // Authenticate user
+    const user = requireAuth(request, reply);
+    if (!user) return;
+
+    const userWorkspace = await getUserWorkspace(user.userId);
+    const workDir = request.body?.workDir || userWorkspace;
     const sessionId = request.body?.sessionId || uuidv4();
 
-    logger.info({ sessionId, workDir }, 'Starting interactive terminal');
+    logger.info({ sessionId, userId: user.userId, workDir }, 'Starting interactive terminal');
     addSystemLog('info', 'execution', 'terminal', 'Interactive terminal started', {
-      metadata: { sessionId, workDir },
+      metadata: { sessionId, workDir, userId: user.userId },
     });
 
-    // Create interactive session
-    terminalService.createInteractiveSession(sessionId, workDir);
+    // Create interactive session - as user if they have Unix account
+    const dbUser = await userRepository.findById(user.userId);
+
+    if (dbUser?.unixUsername) {
+      // Create session running as the user
+      const session = await terminalService.createUserInteractiveSession(sessionId, user.userId, workDir);
+      if (!session) {
+        return {
+          success: false,
+          error: {
+            code: 'SESSION_FAILED',
+            message: 'Failed to create interactive session',
+          },
+        };
+      }
+    } else if (user.role === 'admin') {
+      // Admin without Unix account - use root
+      terminalService.createInteractiveSession(sessionId, workDir);
+    } else {
+      return {
+        success: false,
+        error: {
+          code: 'NO_UNIX_ACCOUNT',
+          message: 'You need a Unix account to use the terminal. Contact an admin to create one.',
+        },
+      };
+    }
 
     const response: ApiResponse<{ sessionId: string; message: string }> = {
       success: true,

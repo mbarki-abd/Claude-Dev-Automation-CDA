@@ -318,6 +318,61 @@ export async function userRoutes(fastify: FastifyInstance) {
     return { success: true };
   });
 
+  // Grant sudo access to user (admin only)
+  fastify.post('/api/users/:id/sudo', { preHandler: requireAdmin }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+
+    const user = await userRepository.findById(id);
+    if (!user) {
+      return reply.code(404).send({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'User not found' },
+      });
+    }
+
+    if (!user.unixUsername) {
+      return reply.code(400).send({
+        success: false,
+        error: { code: 'NO_UNIX_ACCOUNT', message: 'User must have a Unix account first' },
+      });
+    }
+
+    const result = await unixAccountService.grantSudoAccess(id);
+
+    if (!result.success) {
+      return reply.code(400).send({
+        success: false,
+        error: { code: 'SUDO_GRANT_FAILED', message: result.error },
+      });
+    }
+
+    return { success: true };
+  });
+
+  // Revoke sudo access from user (admin only)
+  fastify.delete('/api/users/:id/sudo', { preHandler: requireAdmin }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+
+    const user = await userRepository.findById(id);
+    if (!user) {
+      return reply.code(404).send({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'User not found' },
+      });
+    }
+
+    const result = await unixAccountService.revokeSudoAccess(id);
+
+    if (!result.success) {
+      return reply.code(400).send({
+        success: false,
+        error: { code: 'SUDO_REVOKE_FAILED', message: result.error },
+      });
+    }
+
+    return { success: true };
+  });
+
   // Get user credentials (providers only, not actual secrets)
   fastify.get('/api/users/:id/credentials', { preHandler: requireAuth }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };

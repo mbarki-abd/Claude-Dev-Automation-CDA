@@ -130,7 +130,7 @@ class UnixAccountService {
     logger.debug({ username, uid, gid }, 'System user created');
   }
 
-  private async setupHomeDirectory(homeDirectory: string, uid: number, gid: number): Promise<void> {
+  private async setupHomeDirectory(homeDirectory: string, uid: number, gid: number, isAdmin: boolean = false): Promise<void> {
     // Create standard directories
     const directories = [
       '.config',
@@ -139,8 +139,10 @@ class UnixAccountService {
       '.local/share',
       '.cache',
       '.ssh',
-      'projects',
+      'projects',           // User's workspace directory
+      'projects/shared',    // Shared projects
       'logs',
+      'tmp',                // User temp directory
     ];
 
     for (const dir of directories) {
@@ -195,6 +197,76 @@ fi
     await execAsync(`chown ${uid}:${gid} "${profilePath}"`);
 
     logger.debug({ homeDirectory }, 'Home directory setup completed');
+  }
+
+  /**
+   * Grant sudo access to a user (for admin role)
+   */
+  async grantSudoAccess(userId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const user = await userRepository.findById(userId);
+      if (!user || !user.unixUsername) {
+        return { success: false, error: 'User or Unix account not found' };
+      }
+
+      const unixUsername = user.unixUsername;
+
+      // Add user to sudo group
+      await execAsync(`usermod -aG sudo ${unixUsername}`);
+
+      // Create sudoers.d entry for passwordless sudo (limited commands)
+      const sudoersContent = `# CDA Admin User: ${unixUsername}
+${unixUsername} ALL=(ALL) NOPASSWD: /bin/systemctl restart *, /bin/systemctl status *, /usr/bin/docker *, /usr/bin/docker-compose *, /usr/bin/npm, /usr/bin/node, /usr/bin/pnpm
+`;
+      const sudoersFile = `/etc/sudoers.d/cda-${unixUsername}`;
+
+      // Write sudoers file with correct permissions
+      await fs.writeFile(sudoersFile, sudoersContent, { mode: 0o440 });
+      await execAsync(`chown root:root ${sudoersFile}`);
+
+      logger.info({ userId, unixUsername }, 'Sudo access granted');
+
+      return { success: true };
+    } catch (error) {
+      logger.error({ error, userId }, 'Failed to grant sudo access');
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Revoke sudo access from a user
+   */
+  async revokeSudoAccess(userId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const user = await userRepository.findById(userId);
+      if (!user || !user.unixUsername) {
+        return { success: false, error: 'User or Unix account not found' };
+      }
+
+      const unixUsername = user.unixUsername;
+
+      // Remove from sudo group
+      try {
+        await execAsync(`gpasswd -d ${unixUsername} sudo`);
+      } catch (e) {
+        // User might not be in group, continue
+      }
+
+      // Remove sudoers.d entry
+      const sudoersFile = `/etc/sudoers.d/cda-${unixUsername}`;
+      try {
+        await fs.unlink(sudoersFile);
+      } catch (e) {
+        // File might not exist
+      }
+
+      logger.info({ userId, unixUsername }, 'Sudo access revoked');
+
+      return { success: true };
+    } catch (error) {
+      logger.error({ error, userId }, 'Failed to revoke sudo access');
+      return { success: false, error: (error as Error).message };
+    }
   }
 
   async deleteUnixAccount(userId: string): Promise<boolean> {

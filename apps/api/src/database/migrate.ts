@@ -3,6 +3,7 @@ import { query, closePool } from './client.js';
 import { createChildLogger } from '../utils/logger.js';
 import * as migration001 from './migrations/001_initial.js';
 import * as migration002 from './migrations/002_users.js';
+import * as migration003 from './migrations/003_permissions.js';
 
 const logger = createChildLogger('migrations');
 
@@ -15,6 +16,7 @@ interface Migration {
 const migrations: Migration[] = [
   { name: '001_initial', ...migration001 },
   { name: '002_users', ...migration002 },
+  { name: '003_permissions', ...migration003 },
 ];
 
 async function ensureMigrationsTable(): Promise<void> {
